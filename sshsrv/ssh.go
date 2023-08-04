@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -206,11 +205,9 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 		var reqPayload remoteForwardDetails
 		if err := ssh.Unmarshal(req.Payload, &reqPayload); err != nil {
 			log.Print(err)
+			req.Reply(false, nil)
 			return
 		}
-
-		asJs, _ := json.MarshalIndent(reqPayload, "", "  ")
-		fmt.Println(string(asJs))
 
 		if reqPayload.BindPort != 80 && reqPayload.BindPort != 443 {
 			// We only support forwarding http and https.
@@ -232,6 +229,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			ln, err := net.Listen("tcp", "127.0.11.1:0")
 			if err != nil {
 				log.Printf("failed to listen: %s", err)
+				req.Reply(false, nil)
 				return
 			}
 
