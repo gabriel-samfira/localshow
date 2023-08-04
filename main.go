@@ -28,6 +28,10 @@ type remoteForwardRequest struct {
 	BindPort uint32
 }
 
+type remoteForwardSuccess struct {
+	BindPort uint32
+}
+
 type remoteForwardChannelData struct {
 	DestAddr   string
 	DestPort   uint32
@@ -177,58 +181,61 @@ func main() {
 							destPort := ln.Addr().(*net.TCPAddr).Port
 							log.Printf("actual port is: %d", destPort)
 							log.Printf("listening on %s:%d", reqPayload.BindAddr, reqPayload.BindPort)
-							c, err := ln.Accept()
-							if err != nil {
-								if !errors.Is(err, net.ErrClosed) {
-									log.Printf("failed to accept: %s", err)
-								}
-								return
-							}
-
-							log.Printf("accepted connection from %s", c.RemoteAddr())
-							originAddr, orignPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
-							originPort, _ := strconv.Atoi(orignPortStr)
-							payload := ssh.Marshal(&remoteForwardChannelData{
-								DestAddr: reqPayload.BindAddr,
-								// Not the actual port we're listening on.
-								DestPort:   uint32(reqPayload.BindPort),
-								OriginAddr: originAddr,
-								OriginPort: uint32(originPort),
-							})
-
-							go func() {
-								ch, reqs, err := conn.OpenChannel(forwardedTCPChannelType, payload)
+							for {
+								c, err := ln.Accept()
 								if err != nil {
-									// TODO: log failure to open channel
-									log.Println(err)
-									c.Close()
+									if !errors.Is(err, net.ErrClosed) {
+										log.Printf("failed to accept: %s", err)
+									}
 									return
 								}
-								defer ch.Close()
-								defer c.Close()
+
+								log.Printf("accepted connection from %s", c.RemoteAddr())
+								originAddr, orignPortStr, _ := net.SplitHostPort(c.RemoteAddr().String())
+								originPort, _ := strconv.Atoi(orignPortStr)
+								payload := ssh.Marshal(&remoteForwardChannelData{
+									DestAddr: reqPayload.BindAddr,
+									// Not the actual port we're listening on.
+									DestPort:   uint32(reqPayload.BindPort),
+									OriginAddr: originAddr,
+									OriginPort: uint32(originPort),
+								})
+
 								go func() {
-									for {
-										select {
-										case <-quit:
-											return
-										case req := <-reqs:
-											if req == nil {
-												break
-											}
-											log.Printf("Got request of type: %s", req.Type)
-										}
+									ch, reqs, err := conn.OpenChannel(forwardedTCPChannelType, payload)
+									if err != nil {
+										log.Println(err)
+										c.Close()
+										return
 									}
+									go func() {
+										for {
+											select {
+											case <-quit:
+												return
+											case req := <-reqs:
+												if req == nil {
+													break
+												}
+												log.Printf("Got request of type: %s", req.Type)
+											}
+										}
+									}()
+									go func() {
+										defer ch.Close()
+										defer c.Close()
+										io.Copy(ch, c)
+									}()
+									go func() {
+										defer ch.Close()
+										defer c.Close()
+										io.Copy(c, ch)
+									}()
 								}()
-								go func() {
-									io.Copy(ch, c)
-								}()
-								go func() {
-									io.Copy(c, ch)
-								}()
-								<-quit
-							}()
-							<-quit
+							}
 						}(reqPayload)
+						// TODO: Check if we actually bound to the requested port.
+						req.Reply(true, ssh.Marshal(&remoteForwardSuccess{uint32(reqPayload.BindPort)}))
 					default:
 						log.Printf("unexpected request type: %s", req.Type)
 					}
