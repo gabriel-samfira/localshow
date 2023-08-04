@@ -1,0 +1,7 @@
+[ssh_server]
+bind_address = "0.0.0.0"
+bind_port = 2022
+
+host_key_path = "/tmp/testcert"
+authorized_keys_path = "/home/gabriel/.ssh/authorized_keys"
+disable_auth = true
