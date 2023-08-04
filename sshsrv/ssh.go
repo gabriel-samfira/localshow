@@ -162,7 +162,7 @@ func (s *sshServer) hasForwarder(fwKey string) bool {
 	return ok
 }
 
-func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn) {
+func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn, msgChan chan string) {
 	switch req.Type {
 	case "tcpip-forward":
 		var reqPayload remoteForwardDetails
@@ -197,7 +197,9 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			}()
 
 			destPort := ln.Addr().(*net.TCPAddr).Port
-			log.Printf("listening on 127.0.11.1:%d", destPort)
+			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d\n", destPort)
+			log.Println(msg)
+			msgChan <- msg
 			for {
 				c, err := ln.Accept()
 				if err != nil {
@@ -261,9 +263,11 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			log.Printf("failed to unmarshal payload: %s", err)
 			return
 		}
-		fw := s.forwarder(reqPayload.forwarderKey(sshConn.RemoteAddr().String()))
+		fwKey := reqPayload.forwarderKey(sshConn.RemoteAddr().String())
+		fw := s.forwarder(fwKey)
 		if fw != nil {
 			fw.Close()
+			s.unregisterForwarder(fwKey)
 		}
 		req.Reply(true, nil)
 	default:
@@ -284,6 +288,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 	log.Printf("new connection from %s", conn.RemoteAddr())
 
 	quit := make(chan struct{})
+	msgChan := make(chan string, 1024)
 	// The incoming Request channel must be serviced.
 	go func() {
 		for {
@@ -292,9 +297,11 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 				if req == nil {
 					break
 				}
-				s.handleSSHRequest(ctx, req, conn)
+				s.handleSSHRequest(ctx, req, conn, msgChan)
 			case <-quit:
 				log.Printf("closing connection from %s", conn.RemoteAddr())
+				return
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -333,12 +340,23 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		go func() {
 			defer channel.Close()
 			defer conn.Close()
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case msg := <-msgChan:
+						term.Write([]byte(fmt.Sprintf(">>>>> %s", msg)))
+					case <-quit:
+						return
+					}
+				}
+			}()
 			for {
-				line, err := term.ReadLine()
+				_, err := term.ReadLine()
 				if err != nil {
 					break
 				}
-				fmt.Printf("%s\r\n", line)
 			}
 		}()
 	}
