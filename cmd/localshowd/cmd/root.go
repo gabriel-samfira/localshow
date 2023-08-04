@@ -11,6 +11,8 @@ import (
 	"syscall"
 
 	"github.com/gabriel-samfira/localshow/config"
+	"github.com/gabriel-samfira/localshow/httpsrv"
+	"github.com/gabriel-samfira/localshow/params"
 	"github.com/gabriel-samfira/localshow/sshsrv"
 	"github.com/spf13/cobra"
 )
@@ -31,34 +33,41 @@ var rootCmd = &cobra.Command{
 	Long:  ``,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), signals...)
 		defer stop()
 
+		tunnelEvents := make(chan params.TunnelEvent, 100)
+
 		cfg, err := config.NewConfig(cfgFile)
 		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return fmt.Errorf("failed to load config: %w", err)
 		}
 
 		if err := sshsrv.GenerateKey(cfg.SSHServer.HostKeyPath); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return fmt.Errorf("failed to generate host key: %w", err)
 		}
 
-		sshSrv, err := sshsrv.NewSSHServer(ctx, cfg)
+		sshSrv, err := sshsrv.NewSSHServer(ctx, cfg, tunnelEvents)
 		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return fmt.Errorf("failed to create ssh server: %w", err)
 		}
 
 		if err := sshSrv.Start(); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
+			return fmt.Errorf("failed to start ssh server: %w", err)
+		}
+
+		httpSrv, err := httpsrv.NewHTTPServer(ctx, cfg, tunnelEvents)
+		if err != nil {
+			return fmt.Errorf("failed to create http server: %w", err)
+		}
+
+		if err := httpSrv.Start(); err != nil {
+			return fmt.Errorf("failed to start http server: %w", err)
 		}
 
 		<-ctx.Done()
-		fmt.Println(cfg)
+		return nil
 	},
 }
 

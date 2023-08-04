@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -17,8 +18,11 @@ import (
 	"time"
 
 	"github.com/gabriel-samfira/localshow/config"
+	"github.com/gabriel-samfira/localshow/params"
 	"golang.org/x/crypto/ssh"
 	terminal "golang.org/x/term"
+
+	"github.com/castillobgr/sententia"
 )
 
 const (
@@ -67,29 +71,40 @@ func GenerateKey(pth string) error {
 	return nil
 }
 
-func NewSSHServer(ctx context.Context, cfg *config.Config) (*sshServer, error) {
+func NewSSHServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent) (*sshServer, error) {
 	config, err := cfg.SSHServer.SSHServerConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ssh server config: %w", err)
 	}
 	return &sshServer{
-		config:      config,
-		quit:        make(chan struct{}),
-		ctx:         ctx,
-		forwarders:  make(map[string]net.Listener),
-		connections: make(chan net.Conn, 10),
-		appConfig:   cfg,
-		mux:         &sync.Mutex{},
-		wg:          &sync.WaitGroup{},
+		config:       config,
+		quit:         make(chan struct{}),
+		ctx:          ctx,
+		forwarders:   make(map[string]*forwarderDetails),
+		connections:  make(chan net.Conn, 10),
+		appConfig:    cfg,
+		mux:          &sync.Mutex{},
+		wg:           &sync.WaitGroup{},
+		tunnelEvents: tunnelEvents,
 	}, nil
 }
 
+type forwarderDetails struct {
+	listener  net.Listener
+	subdomain string
+	bindAddr  string
+
+	msgChan chan string
+	errChan chan error
+}
+
 type sshServer struct {
-	appConfig  *config.Config
-	config     *ssh.ServerConfig
-	listener   net.Listener
-	forwarders map[string]net.Listener
-	mux        *sync.Mutex
+	appConfig    *config.Config
+	config       *ssh.ServerConfig
+	listener     net.Listener
+	forwarders   map[string]*forwarderDetails
+	mux          *sync.Mutex
+	tunnelEvents chan params.TunnelEvent
 
 	connections chan net.Conn
 
@@ -137,19 +152,42 @@ func (s *sshServer) loop() {
 	}
 }
 
-func (s *sshServer) registerForwarder(fwKey string, ln net.Listener) {
+func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
-	s.forwarders[fwKey] = ln
+	if details.subdomain == "" || details.subdomain == "localhost" {
+		subdomain, _ := sententia.Make("{{ adjective }}-{{ noun }}")
+		details.subdomain = subdomain
+	}
+	s.forwarders[fwKey] = &details
+	s.tunnelEvents <- params.TunnelEvent{
+		EventType:          params.EventTypeTunnelReady,
+		NotifyChan:         details.msgChan,
+		ErrorChan:          details.errChan,
+		BindAddr:           details.bindAddr,
+		RequestedSubdomain: details.subdomain,
+	}
 }
 
 func (s *sshServer) unregisterForwarder(fwKey string) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
+	fw := s.forwarders[fwKey]
+	if fw == nil {
+		return
+	}
+	fw.listener.Close()
 	delete(s.forwarders, fwKey)
+	s.tunnelEvents <- params.TunnelEvent{
+		EventType:          params.EventTypeTunnelClosed,
+		NotifyChan:         nil,
+		ErrorChan:          nil,
+		BindAddr:           fw.bindAddr,
+		RequestedSubdomain: fw.subdomain,
+	}
 }
 
-func (s *sshServer) forwarder(fwKey string) net.Listener {
+func (s *sshServer) forwarder(fwKey string) *forwarderDetails {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	return s.forwarders[fwKey]
@@ -162,12 +200,22 @@ func (s *sshServer) hasForwarder(fwKey string) bool {
 	return ok
 }
 
-func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn, msgChan chan string) {
+func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn, msgChan chan string, errChan chan error) {
 	switch req.Type {
 	case "tcpip-forward":
 		var reqPayload remoteForwardDetails
 		if err := ssh.Unmarshal(req.Payload, &reqPayload); err != nil {
 			log.Print(err)
+			return
+		}
+
+		asJs, _ := json.MarshalIndent(reqPayload, "", "  ")
+		fmt.Println(string(asJs))
+
+		if reqPayload.BindPort != 80 && reqPayload.BindPort != 443 {
+			// We only support forwarding http and https.
+			errChan <- fmt.Errorf("unsupported port: %d", reqPayload.BindPort)
+			req.Reply(false, nil)
 			return
 		}
 
@@ -187,7 +235,14 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				return
 			}
 
-			s.registerForwarder(fwKey, ln)
+			destPort := ln.Addr().(*net.TCPAddr).Port
+			s.registerForwarder(fwKey, forwarderDetails{
+				listener:  ln,
+				subdomain: reqPayload.BindAddr,
+				bindAddr:  fmt.Sprintf("127.0.11.1:%d", destPort),
+				msgChan:   msgChan,
+				errChan:   errChan,
+			})
 			defer s.unregisterForwarder(fwKey)
 
 			defer ln.Close()
@@ -196,10 +251,8 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				ln.Close()
 			}()
 
-			destPort := ln.Addr().(*net.TCPAddr).Port
 			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d\n", destPort)
 			log.Println(msg)
-			msgChan <- msg
 			for {
 				c, err := ln.Accept()
 				if err != nil {
@@ -266,7 +319,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 		fwKey := reqPayload.forwarderKey(sshConn.RemoteAddr().String())
 		fw := s.forwarder(fwKey)
 		if fw != nil {
-			fw.Close()
+			fw.listener.Close()
 			s.unregisterForwarder(fwKey)
 		}
 		req.Reply(true, nil)
@@ -289,6 +342,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 
 	quit := make(chan struct{})
 	msgChan := make(chan string, 1024)
+	errChan := make(chan error, 1)
 	// The incoming Request channel must be serviced.
 	go func() {
 		for {
@@ -297,7 +351,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 				if req == nil {
 					break
 				}
-				s.handleSSHRequest(ctx, req, conn, msgChan)
+				s.handleSSHRequest(ctx, req, conn, msgChan, errChan)
 			case <-quit:
 				log.Printf("closing connection from %s", conn.RemoteAddr())
 				return
@@ -341,20 +395,28 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			defer channel.Close()
 			defer conn.Close()
 			go func() {
+				defer channel.Close()
+				defer conn.Close()
 				for {
 					select {
 					case <-ctx.Done():
 						return
 					case msg := <-msgChan:
-						term.Write([]byte(fmt.Sprintf(">>>>> %s", msg)))
+						term.Write([]byte(fmt.Sprintf(">>>>> %s\n", msg)))
+					case err := <-errChan:
+						term.Write([]byte(fmt.Sprintf(">>>>> %s\n", err)))
+						return
 					case <-quit:
 						return
 					}
 				}
 			}()
 			for {
-				_, err := term.ReadLine()
+				line, err := term.ReadLine()
 				if err != nil {
+					break
+				}
+				if line == "quit" {
 					break
 				}
 			}

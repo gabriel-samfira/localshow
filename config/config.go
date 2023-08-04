@@ -1,7 +1,9 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -40,13 +42,72 @@ func (c SSHServer) Validate() error {
 	return nil
 }
 
+type HTTPServer struct {
+	BindAddr string `toml:"bind_address"`
+	BindPort int    `toml:"bind_port"`
+
+	ExcludedSubdomains []string `toml:"excluded_subdomains"`
+	DomainName         string   `toml:"domain_name"`
+
+	UseTLS    bool      `toml:"use_tls" json:"use-tls"`
+	TLSConfig TLSConfig `toml:"tls" json:"tls"`
+}
+
+func (a *HTTPServer) Validate() error {
+	if a.UseTLS {
+		if err := a.TLSConfig.Validate(); err != nil {
+			return fmt.Errorf("failed to validate tls config: %w", err)
+		}
+	}
+	if a.BindPort > 65535 || a.BindPort < 1 {
+		return fmt.Errorf("invalid port nr %d", a.BindPort)
+	}
+
+	ip := net.ParseIP(a.BindAddr)
+	if ip == nil {
+		// No need for deeper validation here, as any invalid
+		// IP address specified in this setting will raise an error
+		// when we try to bind to it.
+		return fmt.Errorf("invalid IP address")
+	}
+	return nil
+}
+
+// BindAddress returns a host:port string.
+func (a *HTTPServer) BindAddress() string {
+	return fmt.Sprintf("%s:%d", a.BindAddr, a.BindPort)
+}
+
+type TLSConfig struct {
+	CRT string `toml:"certificate" json:"certificate"`
+	Key string `toml:"key" json:"key"`
+}
+
+// Validate validates the TLS config
+func (t *TLSConfig) Validate() error {
+	if t.CRT == "" || t.Key == "" {
+		return fmt.Errorf("missing crt or key")
+	}
+
+	_, err := tls.LoadX509KeyPair(t.CRT, t.Key)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 type Config struct {
-	SSHServer SSHServer `toml:"ssh_server"`
+	SSHServer  SSHServer  `toml:"ssh_server"`
+	HTTPServer HTTPServer `toml:"http_server"`
 }
 
 func (c *Config) Validate() error {
 	if err := c.SSHServer.Validate(); err != nil {
 		return fmt.Errorf("failed to validate ssh server config: %w", err)
+	}
+
+	if err := c.HTTPServer.Validate(); err != nil {
+		return fmt.Errorf("failed to validate http server config: %w", err)
 	}
 	return nil
 }

@@ -5,3 +5,18 @@ bind_port = 2022
 host_key_path = "/tmp/testcert"
 authorized_keys_path = "/home/gabriel/.ssh/authorized_keys"
 disable_auth = true
+
+[http_server]
+bind_address = "0.0.0.0"
+bind_port = 8080
+excluded_subdomains = ["example"]
+domain_name = "example.com"
+use_tls = false
+    [http_server.tls]
+    # The x509 certificates used here should be valid for wildcard domains
+    # and MUST match the domain set in domain_name
+    #
+    # Example: *.example.com
+    #
+    certificate = "/tmp/testcert"
+    key = "/tmp/testcert"
