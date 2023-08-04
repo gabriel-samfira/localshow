@@ -83,6 +83,7 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(remote)
+	log.Printf("registering tunnel for %s", dom)
 	h.vhosts[dom] = &proxyTarget{
 		remote:    reverseProxy,
 		subdomain: event.RequestedSubdomain,
@@ -103,11 +104,14 @@ func (h *HTTPServer) unregisterTunnel(event params.TunnelEvent) error {
 	h.mux.Lock()
 	defer h.mux.Unlock()
 
-	if _, ok := h.vhosts[event.RequestedSubdomain]; !ok {
+	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
+	log.Printf("unregistering tunnel for %s", dom)
+	if _, ok := h.vhosts[dom]; !ok {
+		log.Printf("subdomain %s (%s) not registered", event.RequestedSubdomain, dom)
 		return nil
 	}
 
-	delete(h.vhosts, event.RequestedSubdomain)
+	delete(h.vhosts, dom)
 	return nil
 }
 
@@ -118,12 +122,13 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 			w.WriteHeader(404)
 			return
 		}
+		log.Printf("handling request for %s", parsed.Hostname())
 		p, ok := h.vhosts[parsed.Hostname()]
 		if !ok {
 			w.WriteHeader(502)
+			w.Write([]byte("Bad gateway"))
 			return
 		}
-		log.Println(r.URL)
 		r.Host = p.bindAddr
 		p.remote.ServeHTTP(w, r)
 	}
