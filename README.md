@@ -22,7 +22,7 @@ You may still find this project useful as a learning experience or as a starting
 To build the project, you will need to have [golang](https://go.dev) installed. You can then run the following command:
 
 ```bash
-go install github.com/gabriel-samfira/localshow/cmd/localshowd@latest
+go install github.com/gabriel-example/localshow/cmd/localshowd@latest
 ```
 
 Copy the binary somewhere in your path:
@@ -126,3 +126,39 @@ sudo systemctl daemon-reload
 sudo systemctl enable localshowd.service
 sudo systemctl start localshowd.service
 ```
+
+## Using the service
+
+Now that the service is up, you can expose your local webserver to the internet:
+
+```bash
+ssh -R 80:localhost:8080 example.com -p 2022
+```
+
+Once connected, you will receive a banner with the created tunnel:
+
+```bash
+root@gitea:~# ssh -R 80:localhost:3000 example.com -p 2022
+
+### 
+### HTTP tunnel successfully created on http://starchy-unit.localshow.example.com:9898
+### HTTPS tunnel successfully created on https://starchy-unit.localshow.example.com:9899
+###
+
+```
+
+If you disable TLS, you will only get the HTTP tunnel.
+
+You can also request a user defined subdomain:
+
+```bash
+root@gitea:~# ssh -R gitea:80:localhost:3000 example.com -p 2022
+
+### 
+### HTTP tunnel successfully created on http://gitea.localshow.example.com:9898
+### HTTPS tunnel successfully created on https://gitea.localshow.example.com:9899
+###
+
+```
+
+Have fun!
