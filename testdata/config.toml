@@ -40,3 +40,8 @@ use_tls = true
     # These options are ignored if use_tls is set to false.
     certificate = "/etc/localshow/localshow.example.com/certificate.pem"
     key = "/etc/localshow/localshow.example.com/privkey1.pem"
+
+[debug_server]
+enabled = false
+bind_address = "127.0.0.1"
+bind_port = 6060

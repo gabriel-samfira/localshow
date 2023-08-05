@@ -281,13 +281,15 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 					}
 					log.Printf("opened channel for %s:%d", reqPayload.BindAddr, reqPayload.BindPort)
 					go func() {
+						defer ch.Close()
+						defer c.Close()
 						for {
 							select {
 							case <-ctx.Done():
 								return
 							case req := <-reqs:
 								if req == nil {
-									break
+									return
 								}
 								log.Printf("Got request of type: %s", req.Type)
 							}

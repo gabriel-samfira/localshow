@@ -1,5 +1,10 @@
 package httpsrv
 
+import (
+	"bytes"
+	"html/template"
+)
+
 var badRequestTemplate = `
 <!DOCTYPE html>
 <html>
@@ -33,4 +38,17 @@ type bannerParams struct {
 	HTTPURL  string
 	HTTPSURL string
 	UseTLS   bool
+}
+
+func badRequestHTML(hostname string) []byte {
+	fallback := []byte("Bad Gateway")
+	tpl, err := template.New("").Parse(badRequestTemplate)
+	if err != nil {
+		return fallback
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, struct{ Hostname string }{Hostname: hostname}); err != nil {
+		return fallback
+	}
+	return buf.Bytes()
 }

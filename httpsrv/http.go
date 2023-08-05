@@ -14,6 +14,9 @@ import (
 	"sync"
 	"time"
 
+	_ "expvar"         // Register the expvar handlers
+	_ "net/http/pprof" // Register the pprof handlers
+
 	"github.com/TwiN/go-color"
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
@@ -36,14 +39,23 @@ func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan pa
 		}
 	}
 
+	var debugListener net.Listener
+	if cfg.DebugServer.Enabled {
+		debugListener, err = net.Listen("tcp", cfg.DebugServer.BindAddressString())
+		if err != nil {
+			return nil, fmt.Errorf("failed to listen on %s: %w", cfg.DebugServer.BindAddressString(), err)
+		}
+	}
+
 	return &HTTPServer{
-		listener:    listener,
-		tlsListener: tlsListener,
-		vhosts:      map[string]*proxyTarget{},
-		cfg:         cfg,
-		tunEvents:   tunnelEvents,
-		ctx:         ctx,
-		mux:         &sync.Mutex{},
+		listener:      listener,
+		tlsListener:   tlsListener,
+		debugListener: debugListener,
+		vhosts:        map[string]*proxyTarget{},
+		cfg:           cfg,
+		tunEvents:     tunnelEvents,
+		ctx:           ctx,
+		mux:           &sync.Mutex{},
 	}, nil
 }
 
@@ -71,16 +83,18 @@ func (p *proxyTarget) logRequest(r *http.Request) {
 }
 
 type HTTPServer struct {
-	listener    net.Listener
-	tlsListener net.Listener
-	cfg         *config.Config
-	tunEvents   chan params.TunnelEvent
-	ctx         context.Context
-	mux         *sync.Mutex
+	listener      net.Listener
+	tlsListener   net.Listener
+	debugListener net.Listener
+	cfg           *config.Config
+	tunEvents     chan params.TunnelEvent
+	ctx           context.Context
+	mux           *sync.Mutex
 
 	vhosts map[string]*proxyTarget
 
-	srv *http.Server
+	srv      *http.Server
+	debugSrv *http.Server
 }
 
 func (h *HTTPServer) tunnelSuccessBanner(subdomain string) (string, error) {
@@ -184,7 +198,7 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 		p, ok := h.vhosts[parsed.Hostname()]
 		if !ok {
 			w.WriteHeader(502)
-			w.Write([]byte("Bad gateway"))
+			w.Write(badRequestHTML(parsed.Hostname()))
 			return
 		}
 		r.Host = p.bindAddr
@@ -199,6 +213,8 @@ func (h *HTTPServer) loop() {
 			log.Printf("failed to stop http server: %s", err)
 		}
 		h.listener.Close()
+		h.tlsListener.Close()
+		h.debugListener.Close()
 	}()
 
 	for {
@@ -227,7 +243,7 @@ func (h *HTTPServer) loop() {
 	}
 }
 
-func (h *HTTPServer) Start() error {
+func (h *HTTPServer) startReverseProxy() error {
 	srv := &http.Server{
 		Handler: h.handlerFunc(),
 	}
@@ -248,6 +264,33 @@ func (h *HTTPServer) Start() error {
 	}()
 
 	go h.loop()
+	return nil
+}
+
+func (h *HTTPServer) startDebugServer() error {
+	srv := &http.Server{
+		Handler: http.DefaultServeMux,
+	}
+	h.debugSrv = srv
+
+	go func() {
+		if err := srv.Serve(h.debugListener); err != http.ErrServerClosed {
+			log.Printf("failed to serve on http: %s", err)
+		}
+	}()
+	return nil
+}
+
+func (h *HTTPServer) Start() error {
+	if err := h.startReverseProxy(); err != nil {
+		return fmt.Errorf("failed to start reverse proxy: %w", err)
+	}
+
+	if h.cfg.DebugServer.Enabled {
+		if err := h.startDebugServer(); err != nil {
+			return fmt.Errorf("failed to start debug server: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -256,7 +299,18 @@ func (h *HTTPServer) Stop() error {
 	if h.srv == nil {
 		return nil
 	}
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer shutdownCancel()
-	return h.srv.Shutdown(shutdownCtx)
+	if err := h.srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("failed to shutdown http server: %w", err)
+	}
+
+	if h.debugSrv != nil {
+		if err := h.debugSrv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("failed to shutdown debug server: %w", err)
+		}
+	}
+
+	return nil
 }

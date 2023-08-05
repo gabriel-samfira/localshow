@@ -22,6 +22,35 @@ func NewConfig(cfgFile string) (*Config, error) {
 	return &config, nil
 }
 
+type DebugServer struct {
+	BindAddress string `toml:"bind_address"`
+	BindPort    int    `toml:"bind_port"`
+	Enabled     bool   `toml:"enabled"`
+}
+
+func (d DebugServer) Validate() error {
+	if !d.Enabled {
+		return nil
+	}
+
+	if d.BindPort > 65535 || d.BindPort < 1 {
+		return fmt.Errorf("invalid port nr %d", d.BindPort)
+	}
+
+	ip := net.ParseIP(d.BindAddress)
+	if ip == nil {
+		// No need for deeper validation here, as any invalid
+		// IP address specified in this setting will raise an error
+		// when we try to bind to it.
+		return fmt.Errorf("invalid IP address")
+	}
+	return nil
+}
+
+func (d DebugServer) BindAddressString() string {
+	return fmt.Sprintf("%s:%d", d.BindAddress, d.BindPort)
+}
+
 type SSHServer struct {
 	BindAddress string `toml:"bind_address"`
 	BindPort    int    `toml:"bind_port"`
@@ -107,8 +136,9 @@ func (t *TLSConfig) Validate() error {
 }
 
 type Config struct {
-	SSHServer  SSHServer  `toml:"ssh_server"`
-	HTTPServer HTTPServer `toml:"http_server"`
+	SSHServer   SSHServer   `toml:"ssh_server"`
+	HTTPServer  HTTPServer  `toml:"http_server"`
+	DebugServer DebugServer `toml:"debug_server"`
 }
 
 func (c *Config) Validate() error {
@@ -118,6 +148,10 @@ func (c *Config) Validate() error {
 
 	if err := c.HTTPServer.Validate(); err != nil {
 		return fmt.Errorf("failed to validate http server config: %w", err)
+	}
+
+	if err := c.DebugServer.Validate(); err != nil {
+		return fmt.Errorf("failed to validate debug server config: %w", err)
 	}
 	return nil
 }
