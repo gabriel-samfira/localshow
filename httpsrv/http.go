@@ -212,9 +212,15 @@ func (h *HTTPServer) loop() {
 		if err := h.Stop(); err != nil {
 			log.Printf("failed to stop http server: %s", err)
 		}
-		h.listener.Close()
-		h.tlsListener.Close()
-		h.debugListener.Close()
+		if h.listener != nil {
+			h.listener.Close()
+		}
+		if h.tlsListener != nil {
+			h.tlsListener.Close()
+		}
+		if h.debugListener != nil {
+			h.debugListener.Close()
+		}
 	}()
 
 	for {
