@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TwiN/go-color"
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
 	"golang.org/x/crypto/ssh"
@@ -267,10 +268,8 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			})
 			if err != nil {
 				log.Printf("failed to register forwarder: %s", err)
-				msgChan <- fmt.Sprintf("failed to register forwarder: %s", err)
-				defer sshConn.Close()
+				errChan <- fmt.Errorf("failed to register forwarder: %s", err)
 				req.Reply(false, nil)
-				time.Sleep(1 * time.Second)
 				return
 			}
 			defer s.unregisterForwarder(fwKey)
@@ -433,7 +432,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 					case msg := <-msgChan:
 						term.Write([]byte(fmt.Sprintf("%s\n", msg)))
 					case err := <-errChan:
-						term.Write([]byte(fmt.Sprintf("%s\n", err)))
+						term.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
 						return
 					case <-quit:
 						return
