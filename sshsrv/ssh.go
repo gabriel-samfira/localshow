@@ -323,8 +323,11 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			s.unregisterForwarder(fwKey)
 		}
 		req.Reply(true, nil)
+	case "keepalive@openssh.com":
+		req.Reply(true, nil)
 	default:
 		log.Printf("unexpected request type: %s", req.Type)
+		req.Reply(false, nil)
 	}
 }
 
