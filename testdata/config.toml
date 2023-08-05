@@ -41,6 +41,9 @@ use_tls = true
     certificate = "/etc/localshow/localshow.example.com/certificate.pem"
     key = "/etc/localshow/localshow.example.com/privkey1.pem"
 
+# This section enables and configures the golang debug server. You can use it for
+# debug and profiling. I encourage you to only use it when needed and to only bind
+# it to localhost.
 [debug_server]
 enabled = false
 bind_address = "127.0.0.1"
