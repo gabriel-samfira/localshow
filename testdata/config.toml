@@ -1,22 +1,42 @@
 [ssh_server]
+# This is the SSH server bind address.
 bind_address = "0.0.0.0"
+# This is the SSH server listen port. Feel free to use port 22 here,
+# after you set the cap_net_bind_service=+ep capability on the binary.
 bind_port = 2022
 
+# this is the SSH server host certificate. If it does not exist,
+# it will be created on startup.
+# Please generate a proper one and secure it.
 host_key_path = "/tmp/testcert"
-authorized_keys_path = "/home/gabriel/.ssh/authorized_keys"
-disable_auth = true
+authorized_keys_path = "/home/tun/.ssh/authorized_keys"
+disable_auth = false
 
 [http_server]
 bind_address = "0.0.0.0"
-bind_port = 8080
-excluded_subdomains = ["example"]
-domain_name = "example.com"
-use_tls = false
+# The HTTP reverse proxy bind port. Feel free to use port 80 here,
+# after you set the cap_net_bind_service=+ep capability on the binary.
+bind_port = 9898
+# The TLS bind port. Feel free to use port 443 here, after you set the
+# cap_net_bind_service=+ep capability on the binary.
+# This option is ignored if use_tls is set to false.
+tls_bind_port = 9899
+# Exclude a list of subdomains from localshow allocation. If a user will
+# try to allocate a subdomain that matches one of the excluded subdomains,
+# the allocation will fail.
+excluded_subdomains = ["", "www", "email"]
+# The base domain name used by localshow to create virtual hosts. Subdomains
+# will be allocated under this domain name.
+domain_name = "localshow.example.com"
+# Enable the TLS listener.
+use_tls = true
     [http_server.tls]
     # The x509 certificates used here should be valid for wildcard domains
     # and MUST match the domain set in domain_name
     #
     # Example: *.example.com
     #
-    certificate = "/tmp/testcert"
-    key = "/tmp/testcert"
+    # The certificate needs to be concatenated pwith the full chain.
+    # These options are ignored if use_tls is set to false.
+    certificate = "/etc/localshow/localshow.example.com/certificate.pem"
+    key = "/etc/localshow/localshow.example.com/privkey1.pem"

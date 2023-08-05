@@ -400,9 +400,9 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 					case <-ctx.Done():
 						return
 					case msg := <-msgChan:
-						term.Write([]byte(fmt.Sprintf(">>>>> %s\n", msg)))
+						term.Write([]byte(fmt.Sprintf("%s\n", msg)))
 					case err := <-errChan:
-						term.Write([]byte(fmt.Sprintf(">>>>> %s\n", err)))
+						term.Write([]byte(fmt.Sprintf("%s\n", err)))
 						return
 					case <-quit:
 						return

@@ -1,8 +1,10 @@
 package httpsrv
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -26,13 +28,22 @@ func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan pa
 		return nil, fmt.Errorf("failed to listen on %s: %w", cfg.HTTPServer.BindAddress(), err)
 	}
 
+	var tlsListener net.Listener
+	if cfg.HTTPServer.UseTLS {
+		tlsListener, err = net.Listen("tcp", cfg.HTTPServer.TLSBindAddress())
+		if err != nil {
+			return nil, fmt.Errorf("failed to listen on %s: %w", cfg.HTTPServer.TLSBindAddress(), err)
+		}
+	}
+
 	return &HTTPServer{
-		listener:  listener,
-		vhosts:    map[string]*proxyTarget{},
-		cfg:       cfg,
-		tunEvents: tunnelEvents,
-		ctx:       ctx,
-		mux:       &sync.Mutex{},
+		listener:    listener,
+		tlsListener: tlsListener,
+		vhosts:      map[string]*proxyTarget{},
+		cfg:         cfg,
+		tunEvents:   tunnelEvents,
+		ctx:         ctx,
+		mux:         &sync.Mutex{},
 	}, nil
 }
 
@@ -44,16 +55,63 @@ type proxyTarget struct {
 	errChan   chan error
 }
 
+func (p *proxyTarget) logRequest(r *http.Request) {
+	if p.msgChan == nil {
+		return
+	}
+	tm := time.Now().UTC()
+	logMsg := fmt.Sprintf("%s - - %s \"%s %s %s\" %s %dus", r.RemoteAddr,
+		tm.Format("02/Jan/2006:15:04:05 -0700"),
+		r.Method,
+		r.URL.Path,
+		r.Proto,
+		r.UserAgent(),
+		time.Since(tm))
+	p.msgChan <- logMsg
+}
+
 type HTTPServer struct {
-	listener  net.Listener
-	cfg       *config.Config
-	tunEvents chan params.TunnelEvent
-	ctx       context.Context
-	mux       *sync.Mutex
+	listener    net.Listener
+	tlsListener net.Listener
+	cfg         *config.Config
+	tunEvents   chan params.TunnelEvent
+	ctx         context.Context
+	mux         *sync.Mutex
 
 	vhosts map[string]*proxyTarget
 
 	srv *http.Server
+}
+
+func (h *HTTPServer) tunnelSuccessBanner(subdomain string) (string, error) {
+	dom := fmt.Sprintf("%s.%s", subdomain, h.cfg.HTTPServer.DomainName)
+	httpTunnel := fmt.Sprintf("http://%s", dom)
+	if h.cfg.HTTPServer.BindPort != 80 {
+		httpTunnel = fmt.Sprintf("%s:%d", httpTunnel, h.cfg.HTTPServer.BindPort)
+	}
+
+	params := bannerParams{
+		HTTPURL: color.Ize(color.Green, httpTunnel),
+		UseTLS:  h.cfg.HTTPServer.UseTLS,
+	}
+
+	if h.cfg.HTTPServer.UseTLS {
+		httpsTunnel := fmt.Sprintf("https://%s", dom)
+		if h.cfg.HTTPServer.TLSBindPort != 443 {
+			httpsTunnel = fmt.Sprintf("%s:%d", httpsTunnel, h.cfg.HTTPServer.TLSBindPort)
+		}
+		params.HTTPSURL = color.Ize(color.Green, httpsTunnel)
+	}
+
+	tpl, err := template.New("").Parse(tunnelSuccessfulBannerTemplate)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, params); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+	return buf.String(), nil
 }
 
 func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
@@ -92,11 +150,11 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		errChan:   event.ErrorChan,
 	}
 
-	schema := "http"
-	if h.cfg.HTTPServer.UseTLS {
-		schema = "https"
+	banner, err := h.tunnelSuccessBanner(event.RequestedSubdomain)
+	if err != nil {
+		return fmt.Errorf("failed to generate banner: %w", err)
 	}
-	event.NotifyChan <- fmt.Sprintf("Tunnel successfully created on %s", color.Ize(color.Green, fmt.Sprintf("%s://%s:%d", schema, dom, h.cfg.HTTPServer.BindPort)))
+	event.NotifyChan <- banner
 	return nil
 }
 
@@ -130,6 +188,7 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 			return
 		}
 		r.Host = p.bindAddr
+		p.logRequest(r)
 		p.remote.ServeHTTP(w, r)
 	}
 }
@@ -175,13 +234,15 @@ func (h *HTTPServer) Start() error {
 	h.srv = srv
 
 	go func() {
-		if h.cfg.HTTPServer.UseTLS {
-			if err := srv.ServeTLS(h.listener, h.cfg.HTTPServer.TLSConfig.CRT, h.cfg.HTTPServer.TLSConfig.Key); err != http.ErrServerClosed {
-				log.Printf("failed to serve: %s", err)
-			}
-		} else {
-			if err := srv.Serve(h.listener); err != http.ErrServerClosed {
-				log.Printf("failed to serve: %s", err)
+		if err := srv.Serve(h.listener); err != http.ErrServerClosed {
+			log.Printf("failed to serve on http: %s", err)
+		}
+	}()
+
+	go func() {
+		if h.cfg.HTTPServer.UseTLS && h.tlsListener != nil {
+			if err := srv.ServeTLS(h.tlsListener, h.cfg.HTTPServer.TLSConfig.CRT, h.cfg.HTTPServer.TLSConfig.Key); err != http.ErrServerClosed {
+				log.Printf("failed to serve on HTTPS: %s", err)
 			}
 		}
 	}()
@@ -199,46 +260,3 @@ func (h *HTTPServer) Stop() error {
 	defer shutdownCancel()
 	return h.srv.Shutdown(shutdownCtx)
 }
-
-// import (
-// 	"log"
-// 	"net/http"
-// 	"net/http/httputil"
-// 	"net/url"
-// )
-
-// func main() {
-// 	var vhosts = map[string]*httputil.ReverseProxy{}
-// 	remote, err := url.Parse("http://127.0.0.1:9897")
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	proxy := httputil.NewSingleHostReverseProxy(remote)
-
-// 	vhosts["analytics.samfira.com"] = proxy
-
-// 	handler := func(w http.ResponseWriter, r *http.Request) {
-// 		parsed, err := url.Parse("http://" + r.Host)
-// 		if err != nil {
-// 			w.WriteHeader(404)
-// 			return
-// 		}
-// 		p, ok := vhosts[parsed.Hostname()]
-// 		if !ok {
-// 			w.WriteHeader(404)
-// 			return
-// 		}
-// 		log.Println(r.URL)
-// 		r.Host = remote.Host
-// 		p.ServeHTTP(w, r)
-// 	}
-
-// 	// ssl_certificate /etc/letsencrypt/live/analytics.samfira.com/fullchain.pem; # managed by Certbot
-// 	// ssl_certificate_key /etc/letsencrypt/live/analytics.samfira.com/privkey.pem; # managed by Certbot
-
-// 	http.HandleFunc("/", handler)
-// 	err = http.ListenAndServeTLS(":9898", "/etc/letsencrypt/live/analytics.samfira.com/fullchain.pem", "/etc/letsencrypt/live/analytics.samfira.com/privkey.pem", nil)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// }

@@ -49,8 +49,9 @@ type HTTPServer struct {
 	ExcludedSubdomains []string `toml:"excluded_subdomains"`
 	DomainName         string   `toml:"domain_name"`
 
-	UseTLS    bool      `toml:"use_tls" json:"use-tls"`
-	TLSConfig TLSConfig `toml:"tls" json:"tls"`
+	UseTLS      bool      `toml:"use_tls" json:"use-tls"`
+	TLSBindPort int       `toml:"tls_bind_port" json:"tls-bind-port"`
+	TLSConfig   TLSConfig `toml:"tls" json:"tls"`
 }
 
 func (a *HTTPServer) Validate() error {
@@ -61,6 +62,10 @@ func (a *HTTPServer) Validate() error {
 	}
 	if a.BindPort > 65535 || a.BindPort < 1 {
 		return fmt.Errorf("invalid port nr %d", a.BindPort)
+	}
+
+	if a.UseTLS && (a.TLSBindPort > 65535 || a.TLSBindPort < 1) {
+		return fmt.Errorf("invalid tls port nr %d", a.TLSBindPort)
 	}
 
 	ip := net.ParseIP(a.BindAddr)
@@ -76,6 +81,11 @@ func (a *HTTPServer) Validate() error {
 // BindAddress returns a host:port string.
 func (a *HTTPServer) BindAddress() string {
 	return fmt.Sprintf("%s:%d", a.BindAddr, a.BindPort)
+}
+
+// TLSBindAddress returns a host:port string.
+func (a *HTTPServer) TLSBindAddress() string {
+	return fmt.Sprintf("%s:%d", a.BindAddr, a.TLSBindPort)
 }
 
 type TLSConfig struct {

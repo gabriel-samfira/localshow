@@ -1,0 +1,14 @@
+[Unit]
+Description=LocalShow reverse proxy over SSH reverse tunnel
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/localshowd --config /etc/localshow/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+User=localshow
+
+[Install]
+WantedBy=multi-user.target
