@@ -378,7 +378,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			select {
 			case req := <-reqs:
 				if req == nil {
-					break
+					return
 				}
 				s.handleSSHRequest(ctx, req, conn, msgChan, errChan)
 			case <-quit:
