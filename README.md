@@ -22,7 +22,7 @@ You may still find this project useful as a learning experience or as a starting
 To build the project, you will need to have [golang](https://go.dev) installed. You can then run the following command:
 
 ```bash
-go install github.com/gabriel-example/localshow/cmd/localshowd@latest
+go install github.com/gabriel-samfira/localshow/cmd/localshowd@latest
 ```
 
 Copy the binary somewhere in your path:
