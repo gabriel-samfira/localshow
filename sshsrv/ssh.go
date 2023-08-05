@@ -80,6 +80,7 @@ func NewSSHServer(ctx context.Context, cfg *config.Config, tunnelEvents chan par
 		quit:         make(chan struct{}),
 		ctx:          ctx,
 		forwarders:   make(map[string]*forwarderDetails),
+		subdomains:   make(map[string]struct{}),
 		connections:  make(chan net.Conn, 10),
 		appConfig:    cfg,
 		mux:          &sync.Mutex{},
@@ -101,6 +102,7 @@ type sshServer struct {
 	appConfig    *config.Config
 	config       *ssh.ServerConfig
 	listener     net.Listener
+	subdomains   map[string]struct{}
 	forwarders   map[string]*forwarderDetails
 	mux          *sync.Mutex
 	tunnelEvents chan params.TunnelEvent
@@ -151,14 +153,26 @@ func (s *sshServer) loop() {
 	}
 }
 
-func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) {
+func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) error {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	if details.subdomain == "" || details.subdomain == "localhost" {
 		subdomain, _ := sententia.Make("{{ adjective }}-{{ noun }}")
 		details.subdomain = subdomain
 	}
+
+	if _, ok := s.forwarders[fwKey]; ok {
+		return fmt.Errorf("forwarder already registered")
+	}
+
+	if _, ok := s.subdomains[details.subdomain]; ok {
+		return fmt.Errorf("subdomain already registered")
+	}
+
+	log.Printf("registering tunnel with key %s", fwKey)
+	s.subdomains[details.subdomain] = struct{}{}
 	s.forwarders[fwKey] = &details
+
 	s.tunnelEvents <- params.TunnelEvent{
 		EventType:          params.EventTypeTunnelReady,
 		NotifyChan:         details.msgChan,
@@ -166,17 +180,22 @@ func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) {
 		BindAddr:           details.bindAddr,
 		RequestedSubdomain: details.subdomain,
 	}
+
+	return nil
 }
 
 func (s *sshServer) unregisterForwarder(fwKey string) {
 	s.mux.Lock()
 	defer s.mux.Unlock()
-	fw := s.forwarders[fwKey]
-	if fw == nil {
+	fw, ok := s.forwarders[fwKey]
+	if !ok {
 		return
 	}
+
+	log.Printf("unregistering tunnel with key %s", fwKey)
 	fw.listener.Close()
 	delete(s.forwarders, fwKey)
+	delete(s.subdomains, fw.subdomain)
 	s.tunnelEvents <- params.TunnelEvent{
 		EventType:          params.EventTypeTunnelClosed,
 		NotifyChan:         nil,
@@ -232,22 +251,29 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				req.Reply(false, nil)
 				return
 			}
+			defer ln.Close()
+			go func() {
+				<-ctx.Done()
+				ln.Close()
+			}()
 
 			destPort := ln.Addr().(*net.TCPAddr).Port
-			s.registerForwarder(fwKey, forwarderDetails{
+			err = s.registerForwarder(fwKey, forwarderDetails{
 				listener:  ln,
 				subdomain: reqPayload.BindAddr,
 				bindAddr:  fmt.Sprintf("127.0.11.1:%d", destPort),
 				msgChan:   msgChan,
 				errChan:   errChan,
 			})
+			if err != nil {
+				log.Printf("failed to register forwarder: %s", err)
+				msgChan <- fmt.Sprintf("failed to register forwarder: %s", err)
+				defer sshConn.Close()
+				req.Reply(false, nil)
+				time.Sleep(1 * time.Second)
+				return
+			}
 			defer s.unregisterForwarder(fwKey)
-
-			defer ln.Close()
-			go func() {
-				<-ctx.Done()
-				ln.Close()
-			}()
 
 			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d\n", destPort)
 			log.Println(msg)

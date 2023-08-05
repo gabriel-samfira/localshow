@@ -140,7 +140,8 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		}
 	}()
 
-	if _, ok := h.vhosts[event.RequestedSubdomain]; ok {
+	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
+	if _, ok := h.vhosts[dom]; ok {
 		return fmt.Errorf("subdomain %s already registered", event.RequestedSubdomain)
 	}
 
@@ -148,7 +149,6 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		return fmt.Errorf("invalid subdomain %s", event.RequestedSubdomain)
 	}
 
-	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
 	remote, err := url.Parse("http://" + event.BindAddr)
 	if err != nil {
 		return fmt.Errorf("failed to parse bind address %s: %w", event.BindAddr, err)
