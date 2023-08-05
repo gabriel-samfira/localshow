@@ -110,6 +110,14 @@ Change owner on the config dir:
 sudo chown -R localshow:localshow /etc/localshow
 ```
 
+Enable binding to privileged ports:
+
+```bash
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/localshowd
+```
+
+This will allow you to bind to `80`, `443` and `22` without running the server as root. Note, you will have to apply this flag every time you update the binary.
+
 Copy the sample systemd service file and enable the service:
 
 ```bash
