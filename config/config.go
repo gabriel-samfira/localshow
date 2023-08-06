@@ -188,8 +188,8 @@ func (c SSHServer) SSHServerConfig() (*ssh.ServerConfig, error) {
 	}
 
 	if !c.DisableAuth {
-		authorizedKeysMap := c.authorizedKeysMap()
-		cfg.PublicKeyCallback = func(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+		cfg.PublicKeyCallback = func(meta ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
+			authorizedKeysMap := c.authorizedKeysMap()
 			if authorizedKeysMap[string(pubKey.Marshal())] {
 				return &ssh.Permissions{
 					// Record the public key used for authentication.
@@ -198,7 +198,7 @@ func (c SSHServer) SSHServerConfig() (*ssh.ServerConfig, error) {
 					},
 				}, nil
 			}
-			return nil, fmt.Errorf("unknown public key for %q", c.User())
+			return nil, fmt.Errorf("unknown public key for %q", meta.User())
 		}
 	}
 
