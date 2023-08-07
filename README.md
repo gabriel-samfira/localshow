@@ -107,8 +107,6 @@ bind_port = 6060
 
 Read the comments in the config sample to understand what each option does.
 
-## Configuring the server
-
 Create a config dir:
 
 ```bash
