@@ -1,48 +1,49 @@
-name: localshowd
-
+name: "Build localshow images"
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      push_to_project:
+        description: "Project to build images for"
+        required: true
+        default: "ghcr.io/gabriel-samfira"
+      ref:
+        description: "Ref to build"
+        required: true
+        default: "main"
+
+permissions:
+  contents: read
 
 jobs:
-  container-image:
-    runs-on: ubuntu-latest
+    images:
+      permissions:
+        packages: write
+      name: "Build localshow images"
+      runs-on: ubuntu-22.04
+      steps:
+        - name: "Checkout"
+          uses: actions/checkout@v3
+          with:
+            path: src/github.com/gabriel-samfira/localshow
+            fetch-depth: 0
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+        - name: Set up Docker Buildx
+          uses: docker/setup-buildx-action@v2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        - name: Login to GitHub Container Registry
+          uses: docker/login-action@v2
+          with:
+            registry: ghcr.io
+            username: ${{ github.actor }}
+            password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/localshowd
-          flavor: |
-            latest=${{ github.ref == 'refs/heads/main' }}
-          tags: |
-            type=sha
-
-      - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          platforms: linux/amd64, linux/arm64, linux/arm/v7
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          context: .
-          pull: true
-          push: ${{ github.event_name != 'pull_request' }}
+        - name: Build and push
+          run: |
+            cd src/github.com/gabriel-samfira/localshow
+            VERSION=$(git describe --tags --match='v[0-9]*' --always ${{ github.event.inputs.ref }})
+            docker buildx build \
+              --provenance=false \
+              --platform linux/amd64,linux/arm64 \
+              --build-arg="LOCALSHOW_REF=${{ github.event.inputs.ref }}" \
+              -t ${{ github.event.inputs.push_to_project }}/localshow:"${VERSION}" \
+              --push .
