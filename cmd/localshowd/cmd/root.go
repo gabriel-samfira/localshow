@@ -30,6 +30,7 @@ import (
 
 var (
 	cfgFile string = "/etc/localshow/localshow.toml"
+	Version string
 )
 
 var signals = []os.Signal{
