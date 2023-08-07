@@ -17,7 +17,24 @@ If you need something production worthy, I encourage you to use one of the servi
 
 You may still find this project useful as a learning experience or as a starting point for your own project. If you do, I'd love to hear about it!
 
+## What you'll need
+
+To get the best out of localshow, you will need:
+
+* A domain name
+* A server with a public IP address
+* A wildcard `A` record pointing to the server's IP address
+* Optionally, a TLS certificate for the wildcard domain
+
+## How it works
+
+Localshow is a SSH server and a HTTP(S) reverse proxy built into one binary. The SSH server only supports port forwarding. It will allow you to connect and request that the server forward traffic from a port on the server to a port on your local machine. The port you request that the localshow server listen on, should be `80` or `443`. Anything else will return an error. This is just a convention to make it clear that only HTTP traffic will be forwarded from the localshow server, to your local machine.
+
+In reality, the localshow SSH server will completely ignore the port you request and listen on a random port bound to a loopback interface. It will then lie to your client that it started listening on the port you requested. But not to worry, localshow keeps track of the port it listens on for your session. It then sets up a reverse HTTP(S) proxy that forwards traffic back to your server, over the newly created tunnel.
+
 ## Building the project
+
+You can use the `docker` image, or you can build it.
 
 To build the project, you will need to have [golang](https://go.dev) installed. You can then run the following command:
 
@@ -90,7 +107,7 @@ bind_port = 6060
 
 Read the comments in the config sample to understand what each option does.
 
-## Running the server
+## Configuring the server
 
 Create a config dir:
 
@@ -103,6 +120,27 @@ Copy the sample config file and edit it:
 ```bash
 sudo cp testdata/config.toml /etc/localshow/config.toml
 ```
+
+## Running the server using Docker/Podman
+
+At this point you can either use the `docker` image or run the binary directly.
+
+Using docker, you can simply run:
+
+```bash
+docker run \
+    --restart=always -d \
+    -v /etc/localshow:/etc/localshow:z \
+    -p 22:22 -p 80:80 -p 443:443 \
+    --name localshow \
+    ghcr.io/gabriel-samfira/localshow:v0.1
+```
+
+You will need to adjust the ports you expose to match the ports you set in the config file. If you've configured port `22` for the SSH service in the config, you must expose port `22` in the docker run command. The same is true for the HTTP and HTTPS ports.
+
+## Running the server using systemd
+
+If you want to run it as a `systemd` service, you can use the following instructions:
 
 Create a user under which the service will run:
 
