@@ -3,7 +3,7 @@ ARG LOCALSHOW_REF
 
 LABEL stage=builder
 
-RUN apk add musl-dev gcc libtool m4 autoconf g++ make libblkid util-linux-dev git linux-headers mingw-w64-gcc
+RUN apk add musl-dev gcc libtool m4 autoconf g++ make libblkid util-linux-dev git linux-headers
 RUN git config --global --add safe.directory /build
 
 ADD . /build/localshow
