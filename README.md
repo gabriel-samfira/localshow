@@ -72,9 +72,9 @@ use_tls = true
     # The x509 certificates used here should be valid for wildcard domains
     # and MUST match the domain set in domain_name
     #
-    # Example: *.example.com
+    # Example: *.localshow.example.com
     #
-    # The certificate needs to be concatenated pwith the full chain.
+    # The certificate needs to be concatenated with the full chain.
     # These options are ignored if use_tls is set to false.
     certificate = "/etc/localshow/localshow.example.com/certificate.pem"
     key = "/etc/localshow/localshow.example.com/privkey1.pem"
