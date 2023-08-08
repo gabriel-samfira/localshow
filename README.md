@@ -21,10 +21,10 @@ You may still find this project useful as a learning experience or as a starting
 
 To get the best out of localshow, you will need:
 
-* A domain name
-* A server with a public IP address
-* A wildcard `A` record pointing to the server's IP address
-* Optionally, a TLS certificate for the wildcard domain
+- A domain name
+- A server with a public IP address
+- A wildcard `A` record pointing to the server's IP address
+- Optionally, a TLS certificate for the wildcard domain
 
 ## How it works
 
