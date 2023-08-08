@@ -15,10 +15,12 @@
 package sshsrv
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -28,6 +30,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/TwiN/go-color"
@@ -109,7 +112,7 @@ type forwarderDetails struct {
 	subdomain string
 	bindAddr  string
 
-	msgChan chan string
+	msgChan chan params.NotifyMessage
 	errChan chan error
 }
 
@@ -233,7 +236,7 @@ func (s *sshServer) hasForwarder(fwKey string) bool {
 	return ok
 }
 
-func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn, msgChan chan string, errChan chan error) {
+func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshConn *ssh.ServerConn, msgChan chan params.NotifyMessage, errChan chan error) {
 	switch req.Type {
 	case "tcpip-forward":
 		var reqPayload remoteForwardDetails
@@ -370,6 +373,33 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 	}
 }
 
+func (s *sshServer) formatURLsMessage(urls json.RawMessage, format string) ([]byte, error) {
+	if format == "api" {
+		return urls, nil
+	}
+
+	urlsObj := params.URLs{}
+	if err := json.Unmarshal(urls, &urlsObj); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal urls: %w", err)
+	}
+
+	urlsObj.HTTP = color.Ize(color.Green, urlsObj.HTTP)
+	if s.appConfig.HTTPServer.UseTLS {
+		urlsObj.HTTPS = color.Ize(color.Green, urlsObj.HTTPS)
+	}
+
+	tpl, err := template.New("").Parse(tunnelSuccessfulBannerTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, urlsObj); err != nil {
+		return nil, fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
 func (s *sshServer) handleConnection(nConn net.Conn) {
 	ctx, fn := context.WithCancel(context.Background())
 	defer fn()
@@ -377,13 +407,16 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 	// net.Conn.
 	conn, chans, reqs, err := ssh.NewServerConn(nConn, s.config)
 	if err != nil {
-		log.Printf("failed to handshake: %s", err)
+		log.Printf("failed to handshake %s: %s", nConn.RemoteAddr(), err)
 		return
 	}
+	log.Printf("handshake successful for connection from %s", conn.RemoteAddr())
+	user := conn.Permissions.Extensions["username"]
+
 	log.Printf("new connection from %s", conn.RemoteAddr())
 
 	quit := make(chan struct{})
-	msgChan := make(chan string, 1024)
+	msgChan := make(chan params.NotifyMessage, 10)
 	errChan := make(chan error, 1)
 	// The incoming Request channel must be serviced.
 	go func() {
@@ -431,7 +464,11 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			}
 		}(requests)
 
-		term := terminal.NewTerminal(channel, "> ")
+		var prompt string
+		if user != "api" {
+			prompt = "> "
+		}
+		term := terminal.NewTerminal(channel, prompt)
 
 		go func() {
 			defer channel.Close()
@@ -444,7 +481,18 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 					case <-ctx.Done():
 						return
 					case msg := <-msgChan:
-						term.Write([]byte(fmt.Sprintf("%s\n", msg)))
+						var termMsg []byte
+						var err error
+						switch msg.MessageType {
+						case params.NotifyMessageURL:
+							termMsg, err = s.formatURLsMessage(msg.Payload, user)
+							if err != nil {
+								log.Printf("failed to format urls: %s", err)
+							}
+						default:
+							termMsg = msg.Payload
+						}
+						term.Write([]byte(fmt.Sprintf("%s\n", termMsg)))
 					case err := <-errChan:
 						term.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
 						return

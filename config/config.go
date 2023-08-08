@@ -209,6 +209,8 @@ func (c SSHServer) SSHServerConfig() (*ssh.ServerConfig, error) {
 					// Record the public key used for authentication.
 					Extensions: map[string]string{
 						"pubkey-fp": ssh.FingerprintSHA256(pubKey),
+						"username":  meta.User(),
+						"ip":        meta.RemoteAddr().String(),
 					},
 				}, nil
 			}

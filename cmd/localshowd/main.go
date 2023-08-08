@@ -14,7 +14,9 @@
 
 package main
 
-import "github.com/gabriel-samfira/localshow/cmd/localshowd/cmd"
+import (
+	"github.com/gabriel-samfira/localshow/cmd/localshowd/cmd"
+)
 
 func main() {
 	cmd.Execute()
