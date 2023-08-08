@@ -161,13 +161,6 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(remote)
 	log.Printf("registering tunnel for %s", dom)
-	h.vhosts[dom] = &proxyTarget{
-		remote:    reverseProxy,
-		subdomain: event.RequestedSubdomain,
-		bindAddr:  event.BindAddr,
-		msgChan:   event.NotifyChan,
-		errChan:   event.ErrorChan,
-	}
 
 	urls, err := h.tunnelSuccessURLs(event.RequestedSubdomain)
 	if err != nil {
@@ -176,6 +169,15 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	event.NotifyChan <- params.NotifyMessage{
 		MessageType: params.NotifyMessageURL,
 		Payload:     urls,
+	}
+	// Register the vhost after the notify message is sent to the client. This ensures
+	// that the first message that is sent through the channel is the URL message.
+	h.vhosts[dom] = &proxyTarget{
+		remote:    reverseProxy,
+		subdomain: event.RequestedSubdomain,
+		bindAddr:  event.BindAddr,
+		msgChan:   event.NotifyChan,
+		errChan:   event.ErrorChan,
 	}
 	return nil
 }
