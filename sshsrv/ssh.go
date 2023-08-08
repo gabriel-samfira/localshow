@@ -473,6 +473,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		go func() {
 			defer channel.Close()
 			defer conn.Close()
+			loggingEnabled := true
 			go func() {
 				defer channel.Close()
 				defer conn.Close()
@@ -489,10 +490,16 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 							if err != nil {
 								log.Printf("failed to format urls: %s", err)
 							}
+						case params.NotifyMessageLog:
+							if loggingEnabled {
+								termMsg = msg.Payload
+							}
 						default:
 							termMsg = msg.Payload
 						}
-						term.Write([]byte(fmt.Sprintf("%s\n", termMsg)))
+						if len(termMsg) > 0 {
+							term.Write([]byte(fmt.Sprintf("%s\n", termMsg)))
+						}
 					case err := <-errChan:
 						term.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
 						return
@@ -501,13 +508,19 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 					}
 				}
 			}()
+
 			for {
 				line, err := term.ReadLine()
 				if err != nil {
 					break
 				}
-				if line == "quit" {
-					break
+				switch line {
+				case "logs":
+					loggingEnabled = true
+				case "nologs":
+					loggingEnabled = false
+				case "quit":
+					return
 				}
 			}
 		}()
