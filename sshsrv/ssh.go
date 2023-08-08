@@ -474,6 +474,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			defer channel.Close()
 			defer conn.Close()
 			loggingEnabled := true
+			receivedURLs := []byte{}
 			go func() {
 				defer channel.Close()
 				defer conn.Close()
@@ -490,6 +491,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 							if err != nil {
 								log.Printf("failed to format urls: %s", err)
 							}
+							receivedURLs = termMsg
 						case params.NotifyMessageLog:
 							if loggingEnabled {
 								termMsg = msg.Payload
@@ -519,6 +521,12 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 					loggingEnabled = true
 				case "nologs":
 					loggingEnabled = false
+				case "urls":
+					if len(receivedURLs) > 0 {
+						term.Write([]byte(fmt.Sprintf("%s\n", receivedURLs)))
+					} else {
+						term.Write([]byte(fmt.Sprintf("No urls received yet\n")))
+					}
 				case "quit":
 					return
 				}
