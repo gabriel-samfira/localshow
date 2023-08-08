@@ -39,19 +39,6 @@ var badRequestTemplate = `
 </body>
 </html>
 `
-var tunnelSuccessfulBannerTemplate = `
-### 
-### HTTP tunnel successfully created on {{.HTTP}}
-{{- if .HTTPS}}
-### HTTPS tunnel successfully created on {{.HTTPS}}
-{{- end}}
-###
-`
-
-type bannerParams struct {
-	HTTPURL  string
-	HTTPSURL string
-}
 
 func badRequestHTML(hostname string) []byte {
 	fallback := []byte("Bad Gateway")
