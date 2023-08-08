@@ -519,13 +519,15 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 				switch line {
 				case "logs":
 					loggingEnabled = true
+					term.Write([]byte("Logging enabled\n"))
 				case "nologs":
 					loggingEnabled = false
+					term.Write([]byte("Logging disabled\n"))
 				case "urls":
 					if len(receivedURLs) > 0 {
 						term.Write([]byte(fmt.Sprintf("%s\n", receivedURLs)))
 					} else {
-						term.Write([]byte(fmt.Sprintf("No urls received yet\n")))
+						term.Write([]byte("No urls received yet\n"))
 					}
 				case "quit":
 					return
