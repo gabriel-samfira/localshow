@@ -15,10 +15,9 @@
 package httpsrv
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"net"
 	"net/http"
@@ -31,7 +30,6 @@ import (
 	_ "expvar"         // Register the expvar handlers
 	_ "net/http/pprof" // Register the pprof handlers
 
-	"github.com/TwiN/go-color"
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
 )
@@ -77,7 +75,7 @@ type proxyTarget struct {
 	remote    *httputil.ReverseProxy
 	subdomain string
 	bindAddr  string
-	msgChan   chan string
+	msgChan   chan params.NotifyMessage
 	errChan   chan error
 }
 
@@ -93,7 +91,10 @@ func (p *proxyTarget) logRequest(r *http.Request) {
 		r.Proto,
 		r.UserAgent(),
 		time.Since(tm))
-	p.msgChan <- logMsg
+	p.msgChan <- params.NotifyMessage{
+		MessageType: params.NotifyMessageLog,
+		Payload:     []byte(logMsg),
+	}
 }
 
 type HTTPServer struct {
@@ -111,35 +112,25 @@ type HTTPServer struct {
 	debugSrv *http.Server
 }
 
-func (h *HTTPServer) tunnelSuccessBanner(subdomain string) (string, error) {
+func (h *HTTPServer) tunnelSuccessURLs(subdomain string) ([]byte, error) {
+	urls := params.URLs{}
 	dom := fmt.Sprintf("%s.%s", subdomain, h.cfg.HTTPServer.DomainName)
 	httpTunnel := fmt.Sprintf("http://%s", dom)
 	if h.cfg.HTTPServer.BindPort != 80 {
 		httpTunnel = fmt.Sprintf("%s:%d", httpTunnel, h.cfg.HTTPServer.BindPort)
 	}
 
-	params := bannerParams{
-		HTTPURL: color.Ize(color.Green, httpTunnel),
-		UseTLS:  h.cfg.HTTPServer.UseTLS,
-	}
+	urls.HTTP = httpTunnel
 
 	if h.cfg.HTTPServer.UseTLS {
 		httpsTunnel := fmt.Sprintf("https://%s", dom)
 		if h.cfg.HTTPServer.TLSBindPort != 443 {
 			httpsTunnel = fmt.Sprintf("%s:%d", httpsTunnel, h.cfg.HTTPServer.TLSBindPort)
 		}
-		params.HTTPSURL = color.Ize(color.Green, httpsTunnel)
+		urls.HTTPS = httpsTunnel
 	}
 
-	tpl, err := template.New("").Parse(tunnelSuccessfulBannerTemplate)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse template: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := tpl.Execute(&buf, params); err != nil {
-		return "", fmt.Errorf("failed to execute template: %w", err)
-	}
-	return buf.String(), nil
+	return json.Marshal(urls)
 }
 
 func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
@@ -154,13 +145,13 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		}
 	}()
 
+	if strings.Contains(event.RequestedSubdomain, ".") {
+		return fmt.Errorf("invalid subdomain %s", event.RequestedSubdomain)
+	}
+
 	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
 	if _, ok := h.vhosts[dom]; ok {
 		return fmt.Errorf("subdomain %s already registered", event.RequestedSubdomain)
-	}
-
-	if strings.Contains(event.RequestedSubdomain, ".") {
-		return fmt.Errorf("invalid subdomain %s", event.RequestedSubdomain)
 	}
 
 	remote, err := url.Parse("http://" + event.BindAddr)
@@ -178,11 +169,14 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		errChan:   event.ErrorChan,
 	}
 
-	banner, err := h.tunnelSuccessBanner(event.RequestedSubdomain)
+	urls, err := h.tunnelSuccessURLs(event.RequestedSubdomain)
 	if err != nil {
-		return fmt.Errorf("failed to generate banner: %w", err)
+		return fmt.Errorf("failed to get urls: %w", err)
 	}
-	event.NotifyChan <- banner
+	event.NotifyChan <- params.NotifyMessage{
+		MessageType: params.NotifyMessageURL,
+		Payload:     urls,
+	}
 	return nil
 }
 

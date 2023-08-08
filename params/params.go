@@ -14,17 +14,36 @@
 
 package params
 
+import "encoding/json"
+
 type EventType string
+type NotifyMessageType string
 
 const (
 	EventTypeTunnelReady  EventType = "tunnel_ready"
 	EventTypeTunnelClosed EventType = "tunnel_closed"
 )
 
+const (
+	NotifyMessageLog NotifyMessageType = "log"
+	NotifyMessageURL NotifyMessageType = "url"
+	NofityMessageRaw NotifyMessageType = "raw"
+)
+
 type TunnelEvent struct {
 	EventType          EventType
-	NotifyChan         chan string
+	NotifyChan         chan NotifyMessage
 	ErrorChan          chan error
 	BindAddr           string
 	RequestedSubdomain string
+}
+
+type URLs struct {
+	HTTP  string `json:"http"`
+	HTTPS string `json:"https"`
+}
+
+type NotifyMessage struct {
+	MessageType NotifyMessageType
+	Payload     json.RawMessage
 }

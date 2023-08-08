@@ -41,9 +41,9 @@ var badRequestTemplate = `
 `
 var tunnelSuccessfulBannerTemplate = `
 ### 
-### HTTP tunnel successfully created on {{.HTTPURL}}
-{{- if .UseTLS}}
-### HTTPS tunnel successfully created on {{.HTTPSURL}}
+### HTTP tunnel successfully created on {{.HTTP}}
+{{- if .HTTPS}}
+### HTTPS tunnel successfully created on {{.HTTPS}}
 {{- end}}
 ###
 `
@@ -51,7 +51,6 @@ var tunnelSuccessfulBannerTemplate = `
 type bannerParams struct {
 	HTTPURL  string
 	HTTPSURL string
-	UseTLS   bool
 }
 
 func badRequestHTML(hostname string) []byte {
