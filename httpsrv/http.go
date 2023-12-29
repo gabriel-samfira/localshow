@@ -73,8 +73,10 @@ func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan pa
 
 type proxyTarget struct {
 	remote    *httputil.ReverseProxy
+	remoteURI *url.URL
 	subdomain string
 	bindAddr  string
+	bindPort  uint32
 	msgChan   chan params.NotifyMessage
 	errChan   chan error
 }
@@ -133,6 +135,11 @@ func (h *HTTPServer) tunnelSuccessURLs(subdomain string) ([]byte, error) {
 	return json.Marshal(urls)
 }
 
+var portMap = map[uint32]string{
+	80:  "http",
+	443: "https",
+}
+
 func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	h.mux.Lock()
 	defer h.mux.Unlock()
@@ -154,7 +161,7 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		return fmt.Errorf("subdomain %s already registered", event.RequestedSubdomain)
 	}
 
-	remote, err := url.Parse("http://" + event.BindAddr)
+	remote, err := url.Parse(fmt.Sprintf("%s://%s", portMap[event.RequestedPort], event.BindAddr))
 	if err != nil {
 		return fmt.Errorf("failed to parse bind address %s: %w", event.BindAddr, err)
 	}
@@ -174,8 +181,10 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	// that the first message that is sent through the channel is the URL message.
 	h.vhosts[dom] = &proxyTarget{
 		remote:    reverseProxy,
+		remoteURI: remote,
 		subdomain: event.RequestedSubdomain,
 		bindAddr:  event.BindAddr,
+		bindPort:  event.RequestedPort,
 		msgChan:   event.NotifyChan,
 		errChan:   event.ErrorChan,
 	}
@@ -204,7 +213,6 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 			w.WriteHeader(404)
 			return
 		}
-		log.Printf("handling request for %s", parsed.Hostname())
 		p, ok := h.vhosts[parsed.Hostname()]
 		if !ok {
 			w.WriteHeader(502)
@@ -212,6 +220,13 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 			return
 		}
 		r.Host = p.bindAddr
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			origParsed, err := url.Parse(origin)
+			if err == nil && origParsed.Hostname() == parsed.Hostname() {
+				r.Header.Set("Origin", fmt.Sprintf("%s://%s", p.remoteURI.Scheme, p.remoteURI.Host))
+			}
+		}
 		p.logRequest(r)
 		p.remote.ServeHTTP(w, r)
 	}

@@ -111,6 +111,7 @@ type forwarderDetails struct {
 	listener  net.Listener
 	subdomain string
 	bindAddr  string
+	bindPort  uint32
 
 	msgChan chan params.NotifyMessage
 	errChan chan error
@@ -196,6 +197,7 @@ func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) er
 		NotifyChan:         details.msgChan,
 		ErrorChan:          details.errChan,
 		BindAddr:           details.bindAddr,
+		RequestedPort:      details.bindPort,
 		RequestedSubdomain: details.subdomain,
 	}
 
@@ -280,6 +282,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				listener:  ln,
 				subdomain: reqPayload.BindAddr,
 				bindAddr:  fmt.Sprintf("127.0.11.1:%d", destPort),
+				bindPort:  reqPayload.BindPort,
 				msgChan:   msgChan,
 				errChan:   errChan,
 			})
