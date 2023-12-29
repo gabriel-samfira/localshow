@@ -16,6 +16,7 @@ package httpsrv
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -167,6 +168,15 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	}
 
 	reverseProxy := httputil.NewSingleHostReverseProxy(remote)
+	if event.RequestedPort == 443 {
+		// If TLS is enabled on the remote end, the certificate will most likely
+		// not be valid for the SNI we're using to access it. Disable TLS verification.
+		// Note: The connection between localshow and the remote end is over an encrypted
+		// SSH channel. Using TLS does not really offer any additional security.
+		reverseProxy.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 	log.Printf("registering tunnel for %s", dom)
 
 	urls, err := h.tunnelSuccessURLs(event.RequestedSubdomain)
