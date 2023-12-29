@@ -35,6 +35,7 @@ type TunnelEvent struct {
 	NotifyChan         chan NotifyMessage
 	ErrorChan          chan error
 	BindAddr           string
+	RequestedPort      uint32
 	RequestedSubdomain string
 }
 
