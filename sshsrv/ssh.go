@@ -476,7 +476,7 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		go func() {
 			defer channel.Close()
 			defer conn.Close()
-			loggingEnabled := true
+			loggingEnabled := false
 			receivedURLs := []byte{}
 			go func() {
 				defer channel.Close()
