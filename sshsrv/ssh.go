@@ -15,12 +15,10 @@
 package sshsrv
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -30,10 +28,8 @@ import (
 	"os"
 	"strconv"
 	"sync"
-	"text/template"
 	"time"
 
-	"github.com/TwiN/go-color"
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
 	"golang.org/x/crypto/ssh"
@@ -294,7 +290,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			}
 			defer s.unregisterForwarder(fwKey)
 
-			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d\n", destPort)
+			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d", destPort)
 			log.Println(msg)
 			for {
 				c, err := ln.Accept()
@@ -376,33 +372,6 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 	}
 }
 
-func (s *sshServer) formatURLsMessage(urls json.RawMessage, format string) ([]byte, error) {
-	if format == "api" {
-		return urls, nil
-	}
-
-	urlsObj := params.URLs{}
-	if err := json.Unmarshal(urls, &urlsObj); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal urls: %w", err)
-	}
-
-	urlsObj.HTTP = color.Ize(color.Green, urlsObj.HTTP)
-	if s.appConfig.HTTPServer.UseTLS {
-		urlsObj.HTTPS = color.Ize(color.Green, urlsObj.HTTPS)
-	}
-
-	tpl, err := template.New("").Parse(tunnelSuccessfulBannerTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse template: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := tpl.Execute(&buf, urlsObj); err != nil {
-		return nil, fmt.Errorf("failed to execute template: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (s *sshServer) handleConnection(nConn net.Conn) {
 	ctx, fn := context.WithCancel(context.Background())
 	defer fn()
@@ -438,6 +407,13 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			}
 		}
 	}()
+	logFmt := stringFormat
+	if user == "api" {
+		logFmt = jsonFormat
+	}
+	msgHandler := newMessageHandler(ctx, msgChan, errChan, logFmt, s.appConfig.HTTPServer.UseTLS)
+	defer msgHandler.Close()
+
 	// Service the incoming Channel channel.
 	for newChannel := range chans {
 		// Channels have a type, depending on the application level
@@ -471,46 +447,23 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		if user != "api" {
 			prompt = "> "
 		}
-		term := terminal.NewTerminal(channel, prompt)
 
 		go func() {
 			defer channel.Close()
 			defer conn.Close()
-			loggingEnabled := false
-			receivedURLs := []byte{}
+			var messageID string
+			term := terminal.NewTerminal(channel, prompt)
+			messageID = msgHandler.Register(term)
+			defer msgHandler.Unregister(messageID)
+			msgHandler.Urls(messageID)
+
 			go func() {
 				defer channel.Close()
 				defer conn.Close()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case msg := <-msgChan:
-						var termMsg []byte
-						var err error
-						switch msg.MessageType {
-						case params.NotifyMessageURL:
-							termMsg, err = s.formatURLsMessage(msg.Payload, user)
-							if err != nil {
-								log.Printf("failed to format urls: %s", err)
-							}
-							receivedURLs = termMsg
-						case params.NotifyMessageLog:
-							if loggingEnabled {
-								termMsg = msg.Payload
-							}
-						default:
-							termMsg = msg.Payload
-						}
-						if len(termMsg) > 0 {
-							term.Write([]byte(fmt.Sprintf("%s\n", termMsg)))
-						}
-					case err := <-errChan:
-						term.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
-						return
-					case <-quit:
-						return
-					}
+				defer msgHandler.Close()
+				err := msgHandler.Wait()
+				if err != nil {
+					log.Print(err)
 				}
 			}()
 
@@ -521,17 +474,11 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 				}
 				switch line {
 				case "logs":
-					loggingEnabled = true
+					msgHandler.SetLogging(messageID, true)
 					term.Write([]byte("Logging enabled\n"))
 				case "nologs":
-					loggingEnabled = false
+					msgHandler.SetLogging(messageID, false)
 					term.Write([]byte("Logging disabled\n"))
-				case "urls":
-					if len(receivedURLs) > 0 {
-						term.Write([]byte(fmt.Sprintf("%s\n", receivedURLs)))
-					} else {
-						term.Write([]byte("No urls received yet\n"))
-					}
 				case "quit":
 					return
 				}
