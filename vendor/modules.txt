@@ -8,6 +8,9 @@ github.com/TwiN/go-color
 # github.com/castillobgr/sententia v0.0.0-20160918013314-9b04b4a53625
 ## explicit
 github.com/castillobgr/sententia
+# github.com/google/uuid v1.5.0
+## explicit
+github.com/google/uuid
 # github.com/inconshreveable/mousetrap v1.1.0
 ## explicit; go 1.18
 github.com/inconshreveable/mousetrap
