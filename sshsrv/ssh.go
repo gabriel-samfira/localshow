@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/gabriel-samfira/localshow/config"
+	"github.com/gabriel-samfira/localshow/database"
 	"github.com/gabriel-samfira/localshow/params"
 	"golang.org/x/crypto/ssh"
 	terminal "golang.org/x/term"
@@ -84,8 +85,27 @@ func GenerateKey(pth string) error {
 	return nil
 }
 
-func NewSSHServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent) (*sshServer, error) {
-	config, err := cfg.SSHServer.SSHServerConfig()
+func passwordAuthCallback(dbConn *database.SQLDatabase) config.PasswordAuthCallback {
+	return func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+		username := conn.User()
+		remoteAddr := conn.RemoteAddr()
+		var remoteIP string
+		switch addr := remoteAddr.(type) {
+		case *net.TCPAddr:
+			remoteIP = addr.IP.String()
+		case *net.UDPAddr:
+			remoteIP = addr.IP.String()
+		}
+		if err := dbConn.RegisterAuthAttept(username, string(password), remoteIP); err != nil {
+			log.Printf("failed to register auth attempt: %s", err)
+		}
+		return nil, fmt.Errorf("now allowed")
+	}
+}
+
+func NewSSHServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent, dbConn *database.SQLDatabase) (*sshServer, error) {
+	authCallback := passwordAuthCallback(dbConn)
+	config, err := cfg.SSHServer.SSHServerConfig(authCallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ssh server config: %w", err)
 	}
@@ -100,6 +120,7 @@ func NewSSHServer(ctx context.Context, cfg *config.Config, tunnelEvents chan par
 		mux:          &sync.Mutex{},
 		wg:           &sync.WaitGroup{},
 		tunnelEvents: tunnelEvents,
+		dbConn:       dbConn,
 	}, nil
 }
 
@@ -121,6 +142,7 @@ type sshServer struct {
 	forwarders   map[string]*forwarderDetails
 	mux          *sync.Mutex
 	tunnelEvents chan params.TunnelEvent
+	dbConn       *database.SQLDatabase
 
 	connections chan net.Conn
 
@@ -267,9 +289,14 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				req.Reply(false, nil)
 				return
 			}
-			defer ln.Close()
+			quit := make(chan struct{})
+			defer close(quit)
+
 			go func() {
-				<-ctx.Done()
+				select {
+				case <-quit:
+				case <-ctx.Done():
+				}
 				ln.Close()
 			}()
 
@@ -290,8 +317,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			}
 			defer s.unregisterForwarder(fwKey)
 
-			msg := fmt.Sprintf("Listening on local address 127.0.11.1:%d", destPort)
-			log.Println(msg)
+			log.Printf("Listening on local address 127.0.11.1:%d", destPort)
 			for {
 				c, err := ln.Accept()
 				if err != nil {
@@ -327,6 +353,8 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 						for {
 							select {
 							case <-ctx.Done():
+								return
+							case <-quit:
 								return
 							case req := <-reqs:
 								if req == nil {
@@ -373,8 +401,13 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 }
 
 func (s *sshServer) handleConnection(nConn net.Conn) {
-	ctx, fn := context.WithCancel(context.Background())
-	defer fn()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		log.Printf("closing connection from %s", nConn.RemoteAddr())
+		nConn.Close()
+	}()
+
 	// Before use, a handshake must be performed on the incoming
 	// net.Conn.
 	conn, chans, reqs, err := ssh.NewServerConn(nConn, s.config)
@@ -382,10 +415,10 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		log.Printf("failed to handshake %s: %s", nConn.RemoteAddr(), err)
 		return
 	}
+	defer conn.Close()
+
 	log.Printf("handshake successful for connection from %s", conn.RemoteAddr())
 	user := conn.Permissions.Extensions["username"]
-
-	log.Printf("new connection from %s", conn.RemoteAddr())
 
 	quit := make(chan struct{})
 	msgChan := make(chan params.NotifyMessage, 10)
@@ -426,7 +459,8 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		}
 		channel, requests, err := newChannel.Accept()
 		if err != nil {
-			log.Fatalf("Could not accept channel: %v", err)
+			log.Printf("Could not accept channel: %v", err)
+			return
 		}
 
 		// Sessions have out-of-band requests such as "shell",
@@ -435,9 +469,10 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		go func(in <-chan *ssh.Request) {
 			for req := range in {
 				switch req.Type {
-				case "shell":
-					req.Reply(req.Type == "shell", nil)
+				case "shell", "pty-req":
+					req.Reply(true, nil)
 				default:
+					req.Reply(false, nil)
 					log.Printf("unexpected request type: %s", req.Type)
 				}
 			}
@@ -485,7 +520,6 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 			}
 		}()
 	}
-	nConn.Close()
 	close(quit)
 	log.Printf("closed connection from %s", conn.RemoteAddr())
 }
