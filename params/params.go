@@ -48,3 +48,8 @@ type NotifyMessage struct {
 	MessageType NotifyMessageType
 	Payload     json.RawMessage
 }
+
+type Datapoint struct {
+	Name  string `json:"name"`
+	Count int64  `json:"count"`
+}

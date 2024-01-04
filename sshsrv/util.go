@@ -68,11 +68,12 @@ type messageHandler struct {
 	format     messageFormat
 	tlsEnabled bool
 
-	ctx    context.Context
-	mux    sync.Mutex
-	quit   chan struct{}
-	closed bool
-	err    error
+	ctx  context.Context
+	mux  sync.Mutex
+	quit chan struct{}
+	once sync.Once
+
+	err error
 }
 
 func (l *messageHandler) Register(wr io.Writer) string {
@@ -148,10 +149,7 @@ func (l *messageHandler) loop() {
 	for {
 		select {
 		case <-l.ctx.Done():
-			if !l.closed {
-				l.closed = true
-				close(l.quit)
-			}
+			l.Close()
 			return
 		case <-l.quit:
 			return
@@ -160,10 +158,7 @@ func (l *messageHandler) loop() {
 				consumer.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
 			}
 			l.err = err
-			if !l.closed {
-				l.closed = true
-				close(l.quit)
-			}
+			l.Close()
 			return
 		case msg, ok := <-l.msgChan:
 			if !ok {
@@ -193,10 +188,9 @@ func (l *messageHandler) loop() {
 }
 
 func (l *messageHandler) Close() {
-	if !l.closed {
-		l.closed = true
+	l.once.Do(func() {
 		close(l.quit)
-	}
+	})
 }
 
 func (l *messageHandler) Wait() error {

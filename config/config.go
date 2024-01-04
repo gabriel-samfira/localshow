@@ -25,6 +25,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type PasswordAuthCallback func(conn ssh.ConnMetadata, password []byte) (*ssh.Permissions, error)
+
 func NewConfig(cfgFile string) (*Config, error) {
 	var config Config
 	if _, err := toml.DecodeFile(cfgFile, &config); err != nil {
@@ -149,10 +151,29 @@ func (t *TLSConfig) Validate() error {
 	return nil
 }
 
+type Database struct {
+	DBFile      string `toml:"db_file"`
+	Debug       bool   `toml:"debug"`
+	GeoIPDBFile string `toml:"geoip_db_file"`
+}
+
+func (d *Database) Validate() error {
+	if d.DBFile == "" {
+		return fmt.Errorf("missing DB file path")
+	}
+
+	return nil
+}
+
+func (d *Database) GormParams() (string, error) {
+	return fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=ON", d.DBFile), nil
+}
+
 type Config struct {
 	SSHServer   SSHServer   `toml:"ssh_server"`
 	HTTPServer  HTTPServer  `toml:"http_server"`
 	DebugServer DebugServer `toml:"debug_server"`
+	Database    Database    `toml:"database"`
 }
 
 func (c *Config) Validate() error {
@@ -193,12 +214,15 @@ func (c SSHServer) authorizedKeysMap() map[string]bool {
 	return authorizedKeysMap
 }
 
-func (c SSHServer) SSHServerConfig() (*ssh.ServerConfig, error) {
+func (c SSHServer) SSHServerConfig(passwdCallback PasswordAuthCallback) (*ssh.ServerConfig, error) {
 	cfg := &ssh.ServerConfig{
 		// Remove to disable password auth.
 		NoClientAuth: c.DisableAuth,
 		// Remove to disable public key auth.
 		PublicKeyCallback: nil,
+		PasswordCallback:  passwdCallback,
+		// This is a lie.
+		ServerVersion: "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.5",
 	}
 
 	if !c.DisableAuth {

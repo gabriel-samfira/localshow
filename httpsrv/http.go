@@ -31,11 +31,13 @@ import (
 	_ "expvar"         // Register the expvar handlers
 	_ "net/http/pprof" // Register the pprof handlers
 
+	"github.com/gabriel-samfira/localshow/apiserver/controllers"
+	"github.com/gabriel-samfira/localshow/apiserver/router"
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
 )
 
-func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent) (*HTTPServer, error) {
+func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent, controller *controllers.APIController) (*HTTPServer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -60,15 +62,18 @@ func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan pa
 		}
 	}
 
+	router := router.NewAPIRouter(controller)
+
 	return &HTTPServer{
-		listener:      listener,
-		tlsListener:   tlsListener,
-		debugListener: debugListener,
-		vhosts:        map[string]*proxyTarget{},
-		cfg:           cfg,
-		tunEvents:     tunnelEvents,
-		ctx:           ctx,
-		mux:           &sync.Mutex{},
+		listener:         listener,
+		tlsListener:      tlsListener,
+		debugListener:    debugListener,
+		vhosts:           map[string]*proxyTarget{},
+		cfg:              cfg,
+		tunEvents:        tunnelEvents,
+		ctx:              ctx,
+		mux:              &sync.Mutex{},
+		rootServerRouter: router,
 	}, nil
 }
 
@@ -101,13 +106,14 @@ func (p *proxyTarget) logRequest(r *http.Request) {
 }
 
 type HTTPServer struct {
-	listener      net.Listener
-	tlsListener   net.Listener
-	debugListener net.Listener
-	cfg           *config.Config
-	tunEvents     chan params.TunnelEvent
-	ctx           context.Context
-	mux           *sync.Mutex
+	listener         net.Listener
+	tlsListener      net.Listener
+	debugListener    net.Listener
+	cfg              *config.Config
+	tunEvents        chan params.TunnelEvent
+	ctx              context.Context
+	mux              *sync.Mutex
+	rootServerRouter http.Handler
 
 	vhosts map[string]*proxyTarget
 
@@ -221,6 +227,10 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 		parsed, err := url.Parse("http://" + r.Host)
 		if err != nil {
 			w.WriteHeader(404)
+			return
+		}
+		if parsed.Hostname() == h.cfg.HTTPServer.DomainName {
+			h.rootServerRouter.ServeHTTP(w, r)
 			return
 		}
 		p, ok := h.vhosts[parsed.Hostname()]

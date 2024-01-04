@@ -21,7 +21,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/gabriel-samfira/localshow/apiserver/controllers"
 	"github.com/gabriel-samfira/localshow/config"
+	"github.com/gabriel-samfira/localshow/database"
 	"github.com/gabriel-samfira/localshow/httpsrv"
 	"github.com/gabriel-samfira/localshow/params"
 	"github.com/gabriel-samfira/localshow/sshsrv"
@@ -60,7 +62,17 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to generate host key: %w", err)
 		}
 
-		sshSrv, err := sshsrv.NewSSHServer(ctx, cfg, tunnelEvents)
+		db, err := database.NewSQLDatabase(ctx, cfg.Database)
+		if err != nil {
+			return fmt.Errorf("failed to create database: %w", err)
+		}
+
+		apiHan, err := controllers.NewAPIController(ctx, db)
+		if err != nil {
+			return fmt.Errorf("failed to create api controller: %w", err)
+		}
+
+		sshSrv, err := sshsrv.NewSSHServer(ctx, cfg, tunnelEvents, db)
 		if err != nil {
 			return fmt.Errorf("failed to create ssh server: %w", err)
 		}
@@ -69,7 +81,7 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to start ssh server: %w", err)
 		}
 
-		httpSrv, err := httpsrv.NewHTTPServer(ctx, cfg, tunnelEvents)
+		httpSrv, err := httpsrv.NewHTTPServer(ctx, cfg, tunnelEvents, apiHan)
 		if err != nil {
 			return fmt.Errorf("failed to create http server: %w", err)
 		}
