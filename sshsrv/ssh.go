@@ -27,6 +27,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,11 @@ import (
 
 const (
 	forwardedTCPChannelType = "forwarded-tcpip"
+
+	// maxForwardersPerClient limits how many tunnels a single SSH
+	// connection may register. This prevents a single client from
+	// exhausting server resources.
+	maxForwardersPerClient = 10
 )
 
 type remoteForwardDetails struct {
@@ -64,22 +70,28 @@ type remoteForwardChannelData struct {
 }
 
 func GenerateKey(pth string) error {
-	if _, err := os.Stat(pth); err == nil {
-		return nil
+	// O_EXCL makes the open atomic: it fails if the file already exists,
+	// eliminating the TOCTOU race between stat and create, and preventing
+	// writes through a symlink planted after the check.
+	keyOut, err := os.OpenFile(pth, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to open %s for writing: %w", pth, err)
 	}
+	defer keyOut.Close()
+
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
+		os.Remove(pth)
 		return err
-	}
-
-	keyOut, err := os.OpenFile(pth, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", pth, err)
 	}
 
 	pemBlock := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}
 	if err := pem.Encode(keyOut, pemBlock); err != nil {
-		return fmt.Errorf("failed to write data to %s: %s", pth, err)
+		os.Remove(pth)
+		return fmt.Errorf("failed to write data to %s: %w", pth, err)
 	}
 
 	return nil
@@ -190,13 +202,59 @@ func (s *sshServer) loop() {
 	}
 }
 
-func (s *sshServer) registerForwarder(fwKey string, details forwarderDetails) error {
+// isValidSubdomain checks that s is a valid DNS label: lowercase
+// alphanumeric and hyphens, not starting or ending with a hyphen,
+// and at most 63 characters (RFC 1035).
+func isValidSubdomain(s string) bool {
+	if len(s) == 0 || len(s) > 63 {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (s *sshServer) registerForwarder(connTag, fwKey string, details forwarderDetails) error {
 	s.mux.Lock()
 	defer s.mux.Unlock()
-	if details.subdomain == "" || details.subdomain == "localhost" {
-		subdomain, _ := sententia.Make("{{ adjective }}-{{ noun }}")
-		details.subdomain = subdomain
+
+	// Per-client tunnel limit.
+	count := 0
+	for k := range s.forwarders {
+		if strings.HasPrefix(k, connTag+":") {
+			count++
+		}
 	}
+	if count >= maxForwardersPerClient {
+		return fmt.Errorf("too many tunnels (max %d)", maxForwardersPerClient)
+	}
+
+	subdomain := strings.ToLower(details.subdomain)
+	if subdomain == "" || subdomain == "localhost" {
+		subdomain, _ = sententia.Make("{{ adjective }}-{{ noun }}")
+	}
+
+	if !isValidSubdomain(subdomain) {
+		return fmt.Errorf("invalid subdomain %q", subdomain)
+	}
+
+	for _, excluded := range s.appConfig.HTTPServer.ExcludedSubdomains {
+		if subdomain == excluded {
+			return fmt.Errorf("subdomain %q is reserved", subdomain)
+		}
+	}
+
+	details.subdomain = subdomain
 
 	if _, ok := s.forwarders[fwKey]; ok {
 		return fmt.Errorf("forwarder already registered")
@@ -243,12 +301,6 @@ func (s *sshServer) unregisterForwarder(fwKey string) {
 	}
 }
 
-func (s *sshServer) forwarder(fwKey string) *forwarderDetails {
-	s.mux.Lock()
-	defer s.mux.Unlock()
-	return s.forwarders[fwKey]
-}
-
 func (s *sshServer) hasForwarder(fwKey string) bool {
 	s.mux.Lock()
 	defer s.mux.Unlock()
@@ -273,24 +325,47 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			return
 		}
 
-		fwKey := reqPayload.forwarderKey(sshConn.RemoteAddr().String())
+		connTag := sshConn.RemoteAddr().String()
+		fwKey := reqPayload.forwarderKey(connTag)
 		if s.hasForwarder(fwKey) {
-			// We're already forwarding this hos:port pair from the same client.
+			// We're already forwarding this host:port pair from the same client.
 			req.Reply(false, nil)
 			return
 		}
 
+		// Listen and register synchronously so we know the outcome
+		// before replying to the client. This avoids a data race on
+		// req.Reply and prevents telling the client the tunnel is up
+		// when it actually failed.
+		ln, err := net.Listen("tcp", "127.0.11.1:0")
+		if err != nil {
+			log.Printf("failed to listen: %s", err)
+			req.Reply(false, nil)
+			return
+		}
+
+		destPort := ln.Addr().(*net.TCPAddr).Port
+		if err := s.registerForwarder(connTag, fwKey, forwarderDetails{
+			listener:  ln,
+			subdomain: reqPayload.BindAddr,
+			bindAddr:  fmt.Sprintf("127.0.11.1:%d", destPort),
+			bindPort:  reqPayload.BindPort,
+			msgChan:   msgChan,
+			errChan:   errChan,
+		}); err != nil {
+			log.Printf("failed to register forwarder: %s", err)
+			errChan <- fmt.Errorf("failed to register forwarder: %w", err)
+			ln.Close()
+			req.Reply(false, nil)
+			return
+		}
+
+		req.Reply(true, ssh.Marshal(&remoteForwardSuccess{uint32(reqPayload.BindPort)}))
+
 		go func(reqPayload remoteForwardDetails) {
-			// Allocate a random port. We'll lie to the client that we actually
-			// bound to the requested port.
-			ln, err := net.Listen("tcp", "127.0.11.1:0")
-			if err != nil {
-				log.Printf("failed to listen: %s", err)
-				req.Reply(false, nil)
-				return
-			}
 			quit := make(chan struct{})
 			defer close(quit)
+			defer s.unregisterForwarder(fwKey)
 
 			go func() {
 				select {
@@ -299,23 +374,6 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				}
 				ln.Close()
 			}()
-
-			destPort := ln.Addr().(*net.TCPAddr).Port
-			err = s.registerForwarder(fwKey, forwarderDetails{
-				listener:  ln,
-				subdomain: reqPayload.BindAddr,
-				bindAddr:  fmt.Sprintf("127.0.11.1:%d", destPort),
-				bindPort:  reqPayload.BindPort,
-				msgChan:   msgChan,
-				errChan:   errChan,
-			})
-			if err != nil {
-				log.Printf("failed to register forwarder: %s", err)
-				errChan <- fmt.Errorf("failed to register forwarder: %s", err)
-				req.Reply(false, nil)
-				return
-			}
-			defer s.unregisterForwarder(fwKey)
 
 			log.Printf("Listening on local address 127.0.11.1:%d", destPort)
 			for {
@@ -377,8 +435,6 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 				}()
 			}
 		}(reqPayload)
-		// TODO: Check if we actually bound to the requested port.
-		req.Reply(true, ssh.Marshal(&remoteForwardSuccess{uint32(reqPayload.BindPort)}))
 	case "cancel-tcpip-forward":
 		var reqPayload remoteForwardDetails
 		if err := ssh.Unmarshal(req.Payload, &reqPayload); err != nil {
@@ -418,7 +474,10 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 	defer conn.Close()
 
 	log.Printf("handshake successful for connection from %s", conn.RemoteAddr())
-	user := conn.Permissions.Extensions["username"]
+	var user string
+	if conn.Permissions != nil {
+		user = conn.Permissions.Extensions["username"]
+	}
 
 	quit := make(chan struct{})
 	msgChan := make(chan params.NotifyMessage, 10)
