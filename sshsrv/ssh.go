@@ -99,7 +99,7 @@ func passwordAuthCallback(dbConn *database.SQLDatabase) config.PasswordAuthCallb
 		if err := dbConn.RegisterAuthAttept(username, string(password), remoteIP); err != nil {
 			log.Printf("failed to register auth attempt: %s", err)
 		}
-		return nil, fmt.Errorf("now allowed")
+		return nil, fmt.Errorf("not allowed")
 	}
 }
 
@@ -386,11 +386,7 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 			return
 		}
 		fwKey := reqPayload.forwarderKey(sshConn.RemoteAddr().String())
-		fw := s.forwarder(fwKey)
-		if fw != nil {
-			fw.listener.Close()
-			s.unregisterForwarder(fwKey)
-		}
+		s.unregisterForwarder(fwKey)
 		req.Reply(true, nil)
 	case "keepalive@openssh.com":
 		req.Reply(true, nil)
@@ -401,16 +397,20 @@ func (s *sshServer) handleSSHRequest(ctx context.Context, req *ssh.Request, sshC
 }
 
 func (s *sshServer) handleConnection(nConn net.Conn) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.ctx)
 	defer func() {
 		cancel()
 		log.Printf("closing connection from %s", nConn.RemoteAddr())
 		nConn.Close()
 	}()
 
-	// Before use, a handshake must be performed on the incoming
-	// net.Conn.
+	// Set a deadline for the SSH handshake to prevent slow connections
+	// from holding resources indefinitely.
+	nConn.SetDeadline(time.Now().Add(30 * time.Second))
 	conn, chans, reqs, err := ssh.NewServerConn(nConn, s.config)
+	// Clear the deadline after the handshake so the connection can
+	// remain open indefinitely.
+	nConn.SetDeadline(time.Time{})
 	if err != nil {
 		log.Printf("failed to handshake %s: %s", nConn.RemoteAddr(), err)
 		return

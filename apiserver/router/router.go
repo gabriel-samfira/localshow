@@ -1,12 +1,13 @@
 package router
 
 import (
+	"net/http"
+
 	"github.com/gabriel-samfira/localshow/apiserver/controllers"
-	"github.com/gorilla/mux"
 )
 
-func NewAPIRouter(han *controllers.APIController) *mux.Router {
-	router := mux.NewRouter()
-	router.PathPrefix("/").HandlerFunc(han.LandingPage).Methods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-	return router
+func NewAPIRouter(han *controllers.APIController) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", han.LandingPage)
+	return mux
 }

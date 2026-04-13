@@ -21,7 +21,6 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
-	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -30,10 +29,10 @@ type PasswordAuthCallback func(conn ssh.ConnMetadata, password []byte) (*ssh.Per
 func NewConfig(cfgFile string) (*Config, error) {
 	var config Config
 	if _, err := toml.DecodeFile(cfgFile, &config); err != nil {
-		return nil, errors.Wrap(err, "decoding toml")
+		return nil, fmt.Errorf("decoding toml: %w", err)
 	}
 	if err := config.Validate(); err != nil {
-		return nil, errors.Wrap(err, "validating config")
+		return nil, fmt.Errorf("validating config: %w", err)
 	}
 	return &config, nil
 }

@@ -38,7 +38,10 @@ func (c *consumer) setLogging(enabled bool) {
 }
 
 func (c *consumer) Write(p []byte) (n int, err error) {
-	if c.loggingEnabled {
+	c.mux.Lock()
+	enabled := c.loggingEnabled
+	c.mux.Unlock()
+	if enabled {
 		return c.wr.Write(p)
 	}
 	return len(p), nil
@@ -145,6 +148,14 @@ func (l *messageHandler) formatURLsMessage(urls json.RawMessage, format messageF
 	return buf.Bytes(), nil
 }
 
+func (l *messageHandler) broadcast(p []byte) {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+	for _, consumer := range l.consumers {
+		consumer.Write(p)
+	}
+}
+
 func (l *messageHandler) loop() {
 	for {
 		select {
@@ -154,9 +165,7 @@ func (l *messageHandler) loop() {
 		case <-l.quit:
 			return
 		case err := <-l.errChan:
-			for _, consumer := range l.consumers {
-				consumer.Write([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
-			}
+			l.broadcast([]byte(color.Ize(color.Red, fmt.Sprintf("%s\n", err))))
 			l.err = err
 			l.Close()
 			return
@@ -173,15 +182,15 @@ func (l *messageHandler) loop() {
 					log.Printf("failed to format urls: %s", err)
 					continue
 				}
+				l.mux.Lock()
 				l.urls = termMsg
+				l.mux.Unlock()
 			default:
 				termMsg = msg.Payload
 			}
 
-			for _, consumer := range l.consumers {
-				if len(termMsg) > 0 {
-					consumer.Write([]byte(fmt.Sprintf("%s\n", termMsg)))
-				}
+			if len(termMsg) > 0 {
+				l.broadcast([]byte(fmt.Sprintf("%s\n", termMsg)))
 			}
 		}
 	}

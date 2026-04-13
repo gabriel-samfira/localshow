@@ -147,6 +147,11 @@ var portMap = map[uint32]string{
 	443: "https",
 }
 
+var schemeMap = map[string]string{
+	"http":  "80",
+	"https": "443",
+}
+
 func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	h.mux.Lock()
 	defer h.mux.Unlock()
@@ -239,6 +244,7 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 			w.Write(badRequestHTML(parsed.Hostname()))
 			return
 		}
+		r.Header.Set("X-Forwarded-Host", r.Host)
 		r.Host = p.bindAddr
 		origin := r.Header.Get("Origin")
 		if origin != "" {
@@ -247,6 +253,17 @@ func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 				r.Header.Set("Origin", fmt.Sprintf("%s://%s", p.remoteURI.Scheme, p.remoteURI.Host))
 			}
 		}
+		if r.RemoteAddr != "" {
+			r.Header.Set("X-Forwarded-For", r.RemoteAddr)
+		}
+		proto := "http"
+		var port string = fmt.Sprintf("%d", h.cfg.HTTPServer.BindPort)
+		if r.TLS != nil {
+			proto = "https"
+			port = fmt.Sprintf("%d", h.cfg.HTTPServer.TLSBindPort)
+		}
+		r.Header.Set("X-Forwarded-Port", string(port))
+		r.Header.Set("X-Forwarded-Proto", proto)
 		p.logRequest(r)
 		p.remote.ServeHTTP(w, r)
 	}
@@ -280,12 +297,10 @@ func (h *HTTPServer) loop() {
 			case params.EventTypeTunnelReady:
 				if err := h.registerTunnel(tunEvent); err != nil {
 					log.Printf("failed to register tunnel: %s", err)
-					tunEvent.ErrorChan <- err
 				}
 			case params.EventTypeTunnelClosed:
 				if err := h.unregisterTunnel(tunEvent); err != nil {
 					log.Printf("failed to unregister tunnel: %s", err)
-					tunEvent.ErrorChan <- err
 				}
 			default:
 				log.Printf("unknown event type: %s", tunEvent.EventType)
@@ -296,7 +311,9 @@ func (h *HTTPServer) loop() {
 
 func (h *HTTPServer) startReverseProxy() error {
 	srv := &http.Server{
-		Handler: h.handlerFunc(),
+		Handler:           h.handlerFunc(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	h.srv = srv
 
