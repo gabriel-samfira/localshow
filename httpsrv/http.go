@@ -37,6 +37,26 @@ import (
 	"github.com/gabriel-samfira/localshow/params"
 )
 
+// newProxyTransport returns an http.Transport with sensible defaults.
+// When tlsSkipVerify is true, the transport accepts any backend certificate.
+// This is safe because the backend connection goes over an SSH tunnel.
+func newProxyTransport(tlsSkipVerify bool) *http.Transport {
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	if tlsSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return transport
+}
+
 func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent, controller *controllers.APIController) (*HTTPServer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -68,18 +88,15 @@ func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan pa
 		listener:         listener,
 		tlsListener:      tlsListener,
 		debugListener:    debugListener,
-		vhosts:           map[string]*proxyTarget{},
 		cfg:              cfg,
 		tunEvents:        tunnelEvents,
 		ctx:              ctx,
-		mux:              &sync.Mutex{},
 		rootServerRouter: router,
 	}, nil
 }
 
 type proxyTarget struct {
 	remote    *httputil.ReverseProxy
-	remoteURI *url.URL
 	subdomain string
 	bindAddr  string
 	bindPort  uint32
@@ -91,8 +108,12 @@ func (p *proxyTarget) logRequest(r *http.Request) {
 	if p.msgChan == nil {
 		return
 	}
+	clientIP := r.RemoteAddr
+	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		clientIP = ip
+	}
 	tm := time.Now().UTC()
-	logMsg := fmt.Sprintf("%s - - %s \"%s %s %s\" %s %dus", r.RemoteAddr,
+	logMsg := fmt.Sprintf("%s - - %s \"%s %s %s\" %s %dus", clientIP,
 		tm.Format("02/Jan/2006:15:04:05 -0700"),
 		r.Method,
 		r.URL.Path,
@@ -112,10 +133,9 @@ type HTTPServer struct {
 	cfg              *config.Config
 	tunEvents        chan params.TunnelEvent
 	ctx              context.Context
-	mux              *sync.Mutex
 	rootServerRouter http.Handler
 
-	vhosts map[string]*proxyTarget
+	vhosts sync.Map // map[string]*proxyTarget
 
 	srv      *http.Server
 	debugSrv *http.Server
@@ -147,14 +167,7 @@ var portMap = map[uint32]string{
 	443: "https",
 }
 
-var schemeMap = map[string]string{
-	"http":  "80",
-	"https": "443",
-}
-
 func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
-	h.mux.Lock()
-	defer h.mux.Unlock()
 	defer func() {
 		if err != nil {
 			select {
@@ -169,7 +182,7 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	}
 
 	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
-	if _, ok := h.vhosts[dom]; ok {
+	if _, loaded := h.vhosts.Load(dom); loaded {
 		return fmt.Errorf("subdomain %s already registered", event.RequestedSubdomain)
 	}
 
@@ -178,15 +191,45 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 		return fmt.Errorf("failed to parse bind address %s: %w", event.BindAddr, err)
 	}
 
-	reverseProxy := httputil.NewSingleHostReverseProxy(remote)
-	if event.RequestedPort == 443 {
-		// If TLS is enabled on the remote end, the certificate will most likely
-		// not be valid for the SNI we're using to access it. Disable TLS verification.
-		// Note: The connection between localshow and the remote end is over an encrypted
-		// SSH channel. Using TLS does not really offer any additional security.
-		reverseProxy.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
+	// Use Rewrite (not the legacy Director) so hop-by-hop headers such as
+	// Connection: Upgrade are forwarded correctly, enabling WebSocket and
+	// other HTTP upgrade protocols.
+	reverseProxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(remote)
+			// SetXForwarded appends to X-Forwarded-For (IP only),
+			// and sets X-Forwarded-Host and X-Forwarded-Proto from
+			// the inbound request.
+			pr.SetXForwarded()
+
+			clientIP, _, splitErr := net.SplitHostPort(pr.In.RemoteAddr)
+			if splitErr == nil {
+				pr.Out.Header.Set("X-Real-IP", clientIP)
+			}
+
+			if pr.In.TLS != nil {
+				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.TLSBindPort))
+			} else {
+				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.BindPort))
+			}
+
+			// Rewrite Origin so CORS checks pass on the backend.
+			origin := pr.In.Header.Get("Origin")
+			if origin != "" {
+				inHost := pr.In.Host
+				if host, _, herr := net.SplitHostPort(inHost); herr == nil {
+					inHost = host
+				}
+				origParsed, perr := url.Parse(origin)
+				if perr == nil && origParsed.Hostname() == inHost {
+					pr.Out.Header.Set("Origin", fmt.Sprintf("%s://%s", remote.Scheme, remote.Host))
+				}
+			}
+		},
+		// Flush immediately so Server-Sent Events and streamed
+		// responses are not buffered.
+		FlushInterval: -1,
+		Transport:     newProxyTransport(event.RequestedPort == 443),
 	}
 	log.Printf("registering tunnel for %s", dom)
 
@@ -200,71 +243,54 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 	}
 	// Register the vhost after the notify message is sent to the client. This ensures
 	// that the first message that is sent through the channel is the URL message.
-	h.vhosts[dom] = &proxyTarget{
+	h.vhosts.Store(dom, &proxyTarget{
 		remote:    reverseProxy,
-		remoteURI: remote,
 		subdomain: event.RequestedSubdomain,
 		bindAddr:  event.BindAddr,
 		bindPort:  event.RequestedPort,
 		msgChan:   event.NotifyChan,
 		errChan:   event.ErrorChan,
-	}
+	})
 	return nil
 }
 
 func (h *HTTPServer) unregisterTunnel(event params.TunnelEvent) error {
-	h.mux.Lock()
-	defer h.mux.Unlock()
-
 	dom := fmt.Sprintf("%s.%s", event.RequestedSubdomain, h.cfg.HTTPServer.DomainName)
 	log.Printf("unregistering tunnel for %s", dom)
-	if _, ok := h.vhosts[dom]; !ok {
+	if _, loaded := h.vhosts.LoadAndDelete(dom); !loaded {
 		log.Printf("subdomain %s (%s) not registered", event.RequestedSubdomain, dom)
-		return nil
 	}
-
-	delete(h.vhosts, dom)
 	return nil
+}
+
+// extractHostname returns the hostname portion of a host or host:port string.
+func extractHostname(hostport string) string {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		// No port present; hostport is already a bare hostname.
+		return hostport
+	}
+	return host
 }
 
 func (h *HTTPServer) handlerFunc() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		parsed, err := url.Parse("http://" + r.Host)
-		if err != nil {
-			w.WriteHeader(404)
-			return
-		}
-		if parsed.Hostname() == h.cfg.HTTPServer.DomainName {
+		hostname := extractHostname(r.Host)
+		if hostname == h.cfg.HTTPServer.DomainName {
 			h.rootServerRouter.ServeHTTP(w, r)
 			return
 		}
-		p, ok := h.vhosts[parsed.Hostname()]
+
+		val, ok := h.vhosts.Load(hostname)
 		if !ok {
-			w.WriteHeader(502)
-			w.Write(badRequestHTML(parsed.Hostname()))
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write(badRequestHTML(hostname))
 			return
 		}
-		r.Header.Set("X-Forwarded-Host", r.Host)
-		r.Host = p.bindAddr
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			origParsed, err := url.Parse(origin)
-			if err == nil && origParsed.Hostname() == parsed.Hostname() {
-				r.Header.Set("Origin", fmt.Sprintf("%s://%s", p.remoteURI.Scheme, p.remoteURI.Host))
-			}
-		}
-		if r.RemoteAddr != "" {
-			r.Header.Set("X-Forwarded-For", r.RemoteAddr)
-		}
-		proto := "http"
-		var port string = fmt.Sprintf("%d", h.cfg.HTTPServer.BindPort)
-		if r.TLS != nil {
-			proto = "https"
-			port = fmt.Sprintf("%d", h.cfg.HTTPServer.TLSBindPort)
-		}
-		r.Header.Set("X-Forwarded-Port", string(port))
-		r.Header.Set("X-Forwarded-Proto", proto)
+		p := val.(*proxyTarget)
 		p.logRequest(r)
+		// All header manipulation (X-Forwarded-*, X-Real-IP, Origin
+		// rewriting) is handled inside the ReverseProxy Rewrite function.
 		p.remote.ServeHTTP(w, r)
 	}
 }
