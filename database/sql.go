@@ -11,7 +11,6 @@ import (
 
 	"github.com/gabriel-samfira/localshow/config"
 	"github.com/gabriel-samfira/localshow/params"
-	"github.com/pkg/errors"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -20,7 +19,7 @@ import (
 func newDBConn(dbCfg config.Database) (conn *gorm.DB, err error) {
 	connURI, err := dbCfg.GormParams()
 	if err != nil {
-		return nil, errors.Wrap(err, "getting DB URI string")
+		return nil, fmt.Errorf("getting DB URI string: %w", err)
 	}
 
 	gormConfig := &gorm.Config{}
@@ -30,7 +29,7 @@ func newDBConn(dbCfg config.Database) (conn *gorm.DB, err error) {
 
 	conn, err = gorm.Open(sqlite.Open(connURI), gormConfig)
 	if err != nil {
-		return nil, errors.Wrap(err, "connecting to database")
+		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
 
 	if dbCfg.Debug {
@@ -42,14 +41,14 @@ func newDBConn(dbCfg config.Database) (conn *gorm.DB, err error) {
 func NewSQLDatabase(ctx context.Context, cfg config.Database) (*SQLDatabase, error) {
 	conn, err := newDBConn(cfg)
 	if err != nil {
-		return nil, errors.Wrap(err, "creating DB connection")
+		return nil, fmt.Errorf("creating DB connection: %w", err)
 	}
 
 	var geoIPConn *geoIP
 	if cfg.GeoIPDBFile != "" {
 		geoIPConn, err = newGeoIP(cfg.GeoIPDBFile)
 		if err != nil {
-			return nil, errors.Wrap(err, "creating geoip connection")
+			return nil, fmt.Errorf("creating geoip connection: %w", err)
 		}
 	}
 	db := &SQLDatabase{
@@ -60,7 +59,7 @@ func NewSQLDatabase(ctx context.Context, cfg config.Database) (*SQLDatabase, err
 	}
 
 	if err := db.migrateDB(); err != nil {
-		return nil, errors.Wrap(err, "migrating database")
+		return nil, fmt.Errorf("migrating database: %w", err)
 	}
 	return db, nil
 }
@@ -75,18 +74,18 @@ type SQLDatabase struct {
 func (s *SQLDatabase) migrateDB() error {
 	if !s.conn.Migrator().HasTable(&RemoteAddress{}) && s.conn.Migrator().HasTable(&AuthAttempt{}) {
 		if err := s.conn.AutoMigrate(&RemoteAddress{}); err != nil {
-			return errors.Wrap(err, "running auto migrate")
+			return fmt.Errorf("running auto migrate: %w", err)
 		}
 
 		if err := s.SyncRemoteAddressesFromAuthAttempts(); err != nil {
-			return errors.Wrap(err, "syncing remote addresses from auth attempts")
+			return fmt.Errorf("syncing remote addresses from auth attempts: %w", err)
 		}
 	}
 	if err := s.conn.AutoMigrate(
 		&AuthAttempt{},
 		&RemoteAddress{},
 	); err != nil {
-		return errors.Wrap(err, "running auto migrate")
+		return fmt.Errorf("running auto migrate: %w", err)
 	}
 
 	return nil
@@ -121,10 +120,12 @@ func (s *SQLDatabase) SyncRemoteAddressesFromAuthAttempts() error {
 func (s *SQLDatabase) upsertRemoteAddress(tx *gorm.DB, remoteAddress string) error {
 	var country string
 	var city string
-	locationRecord, err := s.geoIP.GetRecord(remoteAddress)
-	if err == nil {
-		city = locationRecord.City.Names["en"]
-		country = locationRecord.Country.Names["en"]
+	if s.geoIP != nil {
+		locationRecord, err := s.geoIP.GetRecord(remoteAddress)
+		if err == nil {
+			city = locationRecord.City.Names["en"]
+			country = locationRecord.Country.Names["en"]
+		}
 	}
 
 	var remoteAddressEntry RemoteAddress
@@ -173,7 +174,7 @@ func (s *SQLDatabase) RegisterAuthAttept(username, password, remoteAddress strin
 
 func (s *SQLDatabase) GetTopCountries(top int64) ([]params.Datapoint, error) {
 	var data []params.Datapoint
-	if err := s.conn.Raw(fmt.Sprintf("select country as name,COUNT(*) as count from remote_addresses group by name order by count DESC LIMIT %d", top)).Scan(&data).Error; err != nil {
+	if err := s.conn.Raw("select country as name,COUNT(*) as count from remote_addresses group by name order by count DESC LIMIT ?", top).Scan(&data).Error; err != nil {
 		return nil, err
 	}
 	return data, nil
@@ -181,7 +182,7 @@ func (s *SQLDatabase) GetTopCountries(top int64) ([]params.Datapoint, error) {
 
 func (s *SQLDatabase) GetTopPasswords(top int64) ([]params.Datapoint, error) {
 	var data []params.Datapoint
-	if err := s.conn.Raw(fmt.Sprintf("select password as name,COUNT(*) as count from auth_attempts group by name order by count DESC LIMIT %d", top)).Scan(&data).Error; err != nil {
+	if err := s.conn.Raw("select password as name,COUNT(*) as count from auth_attempts group by name order by count DESC LIMIT ?", top).Scan(&data).Error; err != nil {
 		return nil, err
 	}
 	return data, nil
@@ -189,7 +190,7 @@ func (s *SQLDatabase) GetTopPasswords(top int64) ([]params.Datapoint, error) {
 
 func (s *SQLDatabase) GetTopUsers(top int64) ([]params.Datapoint, error) {
 	var data []params.Datapoint
-	if err := s.conn.Raw(fmt.Sprintf("select username as name,COUNT(*) as count from auth_attempts group by name order by count DESC LIMIT %d", top)).Scan(&data).Error; err != nil {
+	if err := s.conn.Raw("select username as name,COUNT(*) as count from auth_attempts group by name order by count DESC LIMIT ?", top).Scan(&data).Error; err != nil {
 		return nil, err
 	}
 	return data, nil
@@ -197,7 +198,7 @@ func (s *SQLDatabase) GetTopUsers(top int64) ([]params.Datapoint, error) {
 
 func (s *SQLDatabase) GetLastAuthAttemptsByDay(days int64) ([]params.Datapoint, error) {
 	var data []params.Datapoint
-	if err := s.conn.Raw(fmt.Sprintf("select date(created_at) as name,COUNT(*) as count from auth_attempts where created_at > date('now', '-%d day') group by name order by name ASC", days)).Scan(&data).Error; err != nil {
+	if err := s.conn.Raw("select date(created_at) as name,COUNT(*) as count from auth_attempts where created_at > date('now', ? || ' day') group by name order by name ASC", fmt.Sprintf("-%d", days)).Scan(&data).Error; err != nil {
 		return nil, err
 	}
 	return data, nil
