@@ -3,6 +3,7 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"net/http"
 	"sync"
@@ -12,9 +13,15 @@ import (
 )
 
 func NewAPIController(ctx context.Context, db *database.SQLDatabase) (*APIController, error) {
+	t, err := template.New("dashboard").Parse(tpl)
+	if err != nil {
+		return nil, fmt.Errorf("parsing dashboard template: %w", err)
+	}
+
 	ctr := &APIController{
-		db:  db,
-		ctx: ctx,
+		db:       db,
+		ctx:      ctx,
+		template: t,
 	}
 	ctr.updateStats()
 	go ctr.loop()
@@ -23,8 +30,9 @@ func NewAPIController(ctx context.Context, db *database.SQLDatabase) (*APIContro
 }
 
 type APIController struct {
-	db  *database.SQLDatabase
-	ctx context.Context
+	db       *database.SQLDatabase
+	ctx      context.Context
+	template *template.Template
 
 	countries    Datapoints
 	passwords    Datapoints
@@ -36,29 +44,21 @@ type APIController struct {
 
 func (a *APIController) LandingPage(w http.ResponseWriter, r *http.Request) {
 	a.mux.Lock()
-	defer a.mux.Unlock()
-
-	t, err := template.New("").Parse(tpl)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("I messed up..."))
-		return
-	}
-
 	tplParams := TemplateParams{
 		Countries:    a.countries,
 		Passwords:    a.passwords,
 		Users:        a.users,
 		AuthAttempts: a.authAttempts,
 	}
+	a.mux.Unlock()
+
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, tplParams); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("I messed up..."))
+	if err := a.template.Execute(&buf, tplParams); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(buf.Bytes())
 }
 
