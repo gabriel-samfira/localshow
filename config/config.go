@@ -90,6 +90,15 @@ type HTTPServer struct {
 	BindAddr string `toml:"bind_address"`
 	BindPort int    `toml:"bind_port"`
 
+	// ExternalPort and ExternalTLSPort are the public-facing ports
+	// used for tunnel URL generation and X-Forwarded-Port headers.
+	// Set these when localshow is behind a reverse proxy whose
+	// external ports differ from the bind ports (e.g. the proxy
+	// listens on 80/443 but forwards to localshow on 8181/4433).
+	// When zero, the corresponding bind port is used.
+	ExternalPort    int `toml:"external_port"`
+	ExternalTLSPort int `toml:"external_tls_port"`
+
 	ExcludedSubdomains []string `toml:"excluded_subdomains"`
 	DomainName         string   `toml:"domain_name"`
 
@@ -130,6 +139,24 @@ func (a *HTTPServer) BindAddress() string {
 // TLSBindAddress returns a host:port string.
 func (a *HTTPServer) TLSBindAddress() string {
 	return fmt.Sprintf("%s:%d", a.BindAddr, a.TLSBindPort)
+}
+
+// EffectivePort returns the public-facing HTTP port. It returns
+// ExternalPort when configured, otherwise it falls back to BindPort.
+func (a *HTTPServer) EffectivePort() int {
+	if a.ExternalPort > 0 {
+		return a.ExternalPort
+	}
+	return a.BindPort
+}
+
+// EffectiveTLSPort returns the public-facing HTTPS port. It returns
+// ExternalTLSPort when configured, otherwise it falls back to TLSBindPort.
+func (a *HTTPServer) EffectiveTLSPort() int {
+	if a.ExternalTLSPort > 0 {
+		return a.ExternalTLSPort
+	}
+	return a.TLSBindPort
 }
 
 type TLSConfig struct {

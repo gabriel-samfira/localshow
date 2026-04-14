@@ -144,17 +144,19 @@ type HTTPServer struct {
 func (h *HTTPServer) tunnelSuccessURLs(subdomain string) ([]byte, error) {
 	urls := params.URLs{}
 	dom := fmt.Sprintf("%s.%s", subdomain, h.cfg.HTTPServer.DomainName)
-	httpTunnel := fmt.Sprintf("http://%s", dom)
-	if h.cfg.HTTPServer.BindPort != 80 {
-		httpTunnel = fmt.Sprintf("%s:%d", httpTunnel, h.cfg.HTTPServer.BindPort)
-	}
 
+	httpPort := h.cfg.HTTPServer.EffectivePort()
+	httpTunnel := fmt.Sprintf("http://%s", dom)
+	if httpPort != 80 {
+		httpTunnel = fmt.Sprintf("%s:%d", httpTunnel, httpPort)
+	}
 	urls.HTTP = httpTunnel
 
 	if h.cfg.HTTPServer.UseTLS {
+		tlsPort := h.cfg.HTTPServer.EffectiveTLSPort()
 		httpsTunnel := fmt.Sprintf("https://%s", dom)
-		if h.cfg.HTTPServer.TLSBindPort != 443 {
-			httpsTunnel = fmt.Sprintf("%s:%d", httpsTunnel, h.cfg.HTTPServer.TLSBindPort)
+		if tlsPort != 443 {
+			httpsTunnel = fmt.Sprintf("%s:%d", httpsTunnel, tlsPort)
 		}
 		urls.HTTPS = httpsTunnel
 	}
@@ -208,9 +210,9 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 			}
 
 			if pr.In.TLS != nil {
-				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.TLSBindPort))
+				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.EffectiveTLSPort()))
 			} else {
-				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.BindPort))
+				pr.Out.Header.Set("X-Forwarded-Port", fmt.Sprintf("%d", h.cfg.HTTPServer.EffectivePort()))
 			}
 
 			// Rewrite Origin so CORS checks pass on the backend.

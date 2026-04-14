@@ -21,6 +21,13 @@ bind_port = 9898
 # cap_net_bind_service=+ep capability on the binary.
 # This option is ignored if use_tls is set to false.
 tls_bind_port = 9899
+# When localshow sits behind a reverse proxy whose public-facing ports
+# differ from the bind ports above, set external_port and external_tls_port
+# to the ports users actually connect on. These are used for tunnel URL
+# generation and X-Forwarded-Port headers. When unset (or 0), the
+# corresponding bind port is used.
+# external_port = 80
+# external_tls_port = 443
 # Exclude a list of subdomains from localshow allocation. If a user will
 # try to allocate a subdomain that matches one of the excluded subdomains,
 # the allocation will fail.
