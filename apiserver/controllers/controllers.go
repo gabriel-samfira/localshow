@@ -39,6 +39,10 @@ type APIController struct {
 	users        Datapoints
 	authAttempts Datapoints
 
+	totalCountries int64
+	totalPasswords int64
+	totalUsers     int64
+
 	mux sync.Mutex
 }
 
@@ -49,6 +53,10 @@ func (a *APIController) LandingPage(w http.ResponseWriter, r *http.Request) {
 		Passwords:    a.passwords,
 		Users:        a.users,
 		AuthAttempts: a.authAttempts,
+
+		TotalCountries: a.totalCountries,
+		TotalPasswords: a.totalPasswords,
+		TotalUsers:     a.totalUsers,
 	}
 	a.mux.Unlock()
 
@@ -105,6 +113,24 @@ func (a *APIController) updateStats() {
 		a.authAttempts.Labels = append(a.authAttempts.Labels, val.Name)
 		a.authAttempts.Data = append(a.authAttempts.Data, val.Count)
 	}
+
+	totalCountries, err := a.db.GetTotalCountries()
+	if err != nil {
+		return
+	}
+	a.totalCountries = totalCountries
+
+	totalPasswords, err := a.db.GetTotalPasswords()
+	if err != nil {
+		return
+	}
+	a.totalPasswords = totalPasswords
+
+	totalUsers, err := a.db.GetTotalUsers()
+	if err != nil {
+		return
+	}
+	a.totalUsers = totalUsers
 }
 
 func (a *APIController) loop() {

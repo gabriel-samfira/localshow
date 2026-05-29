@@ -195,9 +195,9 @@ var tpl = `<!DOCTYPE html>
 		var usersData     = {{ .Users.Data }};
 		var attemptsData  = {{ .AuthAttempts.Data }};
 
-		document.getElementById('totalCountries').textContent  = fmt({{ .Countries.Labels }}.length);
-		document.getElementById('totalPasswords').textContent  = fmt({{ .Passwords.Labels }}.length);
-		document.getElementById('totalUsers').textContent      = fmt({{ .Users.Labels }}.length);
+		document.getElementById('totalCountries').textContent  = fmt({{ .TotalCountries }});
+		document.getElementById('totalPasswords').textContent  = fmt({{ .TotalPasswords }});
+		document.getElementById('totalUsers').textContent      = fmt({{ .TotalUsers }});
 		document.getElementById('totalAttempts').textContent   = fmt(sum(attemptsData));
 
 		makeBar('countries', {{ .Countries.Labels }},  countriesData, 'Unique IPs');

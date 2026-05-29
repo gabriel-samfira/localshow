@@ -204,6 +204,30 @@ func (s *SQLDatabase) GetLastAuthAttemptsByDay(days int64) ([]params.Datapoint, 
 	return data, nil
 }
 
+func (s *SQLDatabase) GetTotalCountries() (int64, error) {
+	var count int64
+	if err := s.conn.Raw("select COUNT(DISTINCT country) from remote_addresses").Scan(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *SQLDatabase) GetTotalPasswords() (int64, error) {
+	var count int64
+	if err := s.conn.Raw("select COUNT(DISTINCT password) from auth_attempts").Scan(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *SQLDatabase) GetTotalUsers() (int64, error) {
+	var count int64
+	if err := s.conn.Raw("select COUNT(DISTINCT username) from auth_attempts").Scan(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s *SQLDatabase) ImportFromCSV(csvFile string) error {
 	err := s.conn.Transaction(func(tx *gorm.DB) error {
 		csvFile, err := os.OpenFile(csvFile, os.O_RDONLY, 0644)

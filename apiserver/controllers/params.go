@@ -10,4 +10,8 @@ type TemplateParams struct {
 	Passwords    Datapoints `json:"passwords"`
 	Users        Datapoints `json:"users"`
 	AuthAttempts Datapoints `json:"auth_attempts"`
+
+	TotalCountries int64 `json:"total_countries"`
+	TotalPasswords int64 `json:"total_passwords"`
+	TotalUsers     int64 `json:"total_users"`
 }
