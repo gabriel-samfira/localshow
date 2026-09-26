@@ -32,6 +32,15 @@ Localshow is a SSH server and a HTTP(S) reverse proxy built into one binary. The
 
 In reality, the localshow SSH server will completely ignore the port you request and listen on a random port bound to a loopback interface. It will then lie to your client that it started listening on the port you requested. But not to worry, localshow keeps track of the port it listens on for your session. It then sets up a reverse HTTP(S) proxy that forwards traffic back to your server, over the newly created tunnel.
 
+## Supported protocols
+
+Anything that runs over HTTP(S) works through the tunnel, including:
+
+- Regular HTTP/1.1 and HTTP/2 requests. Both listeners accept HTTP/2: the TLS listener negotiates it through ALPN and the plaintext listener accepts unencrypted HTTP/2 with prior knowledge (h2c).
+- WebSockets (`ws://` and `wss://`), through the standard HTTP/1.1 upgrade.
+- Server-Sent Events and other streamed responses. Streams are flushed as data arrives.
+- gRPC, including client, server and bidirectional streaming, metadata and trailers. Native gRPC requests are forwarded to plaintext backends as h2c (`ssh -R myapp:80:localhost:50051 ...`) and to TLS backends over HTTP/2 negotiated through ALPN (`ssh -R myapp:443:localhost:50051 ...`). Every other request is forwarded to plaintext backends as HTTP/1.1, which is what most local development servers expect. gRPC-Web is treated as regular HTTP.
+
 ## Building the project
 
 You can use the `docker` image, or you can build it.

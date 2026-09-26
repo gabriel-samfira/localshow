@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -37,11 +38,12 @@ import (
 	"github.com/gabriel-samfira/localshow/params"
 )
 
-// newProxyTransport returns an http.Transport with sensible defaults.
-// When tlsSkipVerify is true, the transport accepts any backend certificate.
-// This is safe because the backend connection goes over an SSH tunnel.
-func newProxyTransport(tlsSkipVerify bool) *http.Transport {
-	transport := &http.Transport{
+// newBaseTransport returns an http.Transport with sensible defaults for
+// reaching a tunneled backend. Callers must choose the wire protocol
+// explicitly: because a custom DialContext is set, net/http does not
+// enable HTTP/2 on its own (see http.Transport.ForceAttemptHTTP2).
+func newBaseTransport() *http.Transport {
+	return &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -51,10 +53,79 @@ func newProxyTransport(tlsSkipVerify bool) *http.Transport {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	if tlsSkipVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+}
+
+// isGRPCRequest reports whether r is a native gRPC request. gRPC is only
+// defined over HTTP/2 and uses the "application/grpc" media type, optionally
+// suffixed with the message encoding (for example "application/grpc+proto").
+//
+// gRPC-Web ("application/grpc-web", "application/grpc-web-text", ...)
+// deliberately does not match: it is designed to work over HTTP/1.1 and is
+// served by HTTP/1.1 capable backends.
+func isGRPCRequest(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return false
 	}
-	return transport
+	return mediaType == "application/grpc" || strings.HasPrefix(mediaType, "application/grpc+")
+}
+
+// backendTransport selects the wire protocol used to reach a tunneled
+// backend.
+//
+// Backends reached over https negotiate the protocol themselves through
+// TLS ALPN, so a single transport with HTTP/2 enabled serves both gRPC
+// (h2) and regular HTTPS (http/1.1) services.
+//
+// Plaintext backends have no negotiation mechanism, so the choice is made
+// per request: native gRPC, which is only defined over HTTP/2, is sent
+// using unencrypted HTTP/2 with prior knowledge (h2c). Everything else,
+// including WebSocket upgrades, Server-Sent Events and gRPC-Web, uses
+// HTTP/1.1, which is what the vast majority of local development servers
+// speak.
+type backendTransport struct {
+	// h1 speaks HTTP/1.1, and additionally HTTP/2 via ALPN for https
+	// backends.
+	h1 http.RoundTripper
+	// h2c speaks unencrypted HTTP/2 with prior knowledge. It is nil for
+	// https backends, where ALPN takes care of protocol selection.
+	h2c http.RoundTripper
+}
+
+func (t *backendTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if t.h2c != nil && isGRPCRequest(r) {
+		return t.h2c.RoundTrip(r)
+	}
+	return t.h1.RoundTrip(r)
+}
+
+// newBackendTransport returns the transport used to reach a backend that
+// is served over the given URL scheme ("http" or "https").
+func newBackendTransport(scheme string) http.RoundTripper {
+	if scheme == "https" {
+		t := newBaseTransport()
+		// The backend certificate cannot be verified: it is whatever the
+		// user runs locally, reached over the SSH tunnel. Skipping
+		// verification is safe because the tunnel itself is authenticated
+		// and encrypted.
+		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		// A custom DialContext or TLSClientConfig disables HTTP/2 unless
+		// it is explicitly requested. With it enabled, ALPN lets the
+		// backend pick h2 (gRPC) or http/1.1.
+		t.ForceAttemptHTTP2 = true
+		return &backendTransport{h1: t}
+	}
+
+	h2c := newBaseTransport()
+	// Unencrypted HTTP/2 is only used for http:// URLs when HTTP/1 is not
+	// part of the protocol set.
+	h2c.Protocols = new(http.Protocols)
+	h2c.Protocols.SetUnencryptedHTTP2(true)
+
+	return &backendTransport{
+		h1:  newBaseTransport(),
+		h2c: h2c,
+	}
 }
 
 func NewHTTPServer(ctx context.Context, cfg *config.Config, tunnelEvents chan params.TunnelEvent, controller *controllers.APIController) (*HTTPServer, error) {
@@ -120,9 +191,16 @@ func (p *proxyTarget) logRequest(r *http.Request) {
 		r.Proto,
 		r.UserAgent(),
 		time.Since(tm))
-	p.msgChan <- params.NotifyMessage{
+	// Never let logging stall a request. The channel is drained by the
+	// SSH session that owns the tunnel; if that side stops consuming
+	// (for example while the session is being torn down) the log line
+	// is dropped rather than blocking the proxied request.
+	select {
+	case p.msgChan <- params.NotifyMessage{
 		MessageType: params.NotifyMessageLog,
 		Payload:     []byte(logMsg),
+	}:
+	default:
 	}
 }
 
@@ -228,10 +306,16 @@ func (h *HTTPServer) registerTunnel(event params.TunnelEvent) (err error) {
 				}
 			}
 		},
-		// Flush immediately so Server-Sent Events and streamed
-		// responses are not buffered.
-		FlushInterval: -1,
-		Transport:     newProxyTransport(event.RequestedPort == 443),
+		// Leave FlushInterval at zero. The reverse proxy already flushes
+		// immediately for streamed responses (unknown Content-Length,
+		// which covers gRPC streams and chunked HTTP/1.1) and for
+		// Server-Sent Events. A negative FlushInterval would also arm an
+		// immediate flush for responses with no body at all, which races
+		// with the handler finishing and turns a gRPC "trailers-only"
+		// response (a single HEADERS frame with END_STREAM) into HEADERS
+		// followed by an empty DATA frame. gRPC clients reject that with
+		// "server closed the stream without sending trailers".
+		Transport: newBackendTransport(remote.Scheme),
 	}
 	log.Printf("registering tunnel for %s", dom)
 
@@ -337,12 +421,29 @@ func (h *HTTPServer) loop() {
 	}
 }
 
-func (h *HTTPServer) startReverseProxy() error {
-	srv := &http.Server{
+// newServer returns the http.Server that fronts all tunnels. The same
+// server instance serves both the plaintext and the TLS listener.
+func (h *HTTPServer) newServer() *http.Server {
+	// Accept HTTP/1.1, HTTP/2 over TLS (negotiated through ALPN) and
+	// unencrypted HTTP/2 with prior knowledge on the plaintext listener.
+	// The latter is what gRPC clients use when connecting to an insecure
+	// http:// endpoint. WebSocket clients keep using HTTP/1.1 because
+	// extended CONNECT (RFC 8441) is not advertised.
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+
+	return &http.Server{
 		Handler:           h.handlerFunc(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		Protocols:         &protocols,
 	}
+}
+
+func (h *HTTPServer) startReverseProxy() error {
+	srv := h.newServer()
 	h.srv = srv
 
 	go func() {
