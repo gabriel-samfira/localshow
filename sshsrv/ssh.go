@@ -545,11 +545,11 @@ func (s *sshServer) handleConnection(nConn net.Conn) {
 		go func() {
 			defer channel.Close()
 			defer conn.Close()
-			var messageID string
 			term := terminal.NewTerminal(channel, prompt)
-			messageID = msgHandler.Register(term)
+			// Register replays any banner or error the tunnel produced
+			// before this session attached.
+			messageID := msgHandler.Register(term)
 			defer msgHandler.Unregister(messageID)
-			msgHandler.Urls(messageID)
 
 			go func() {
 				defer channel.Close()
